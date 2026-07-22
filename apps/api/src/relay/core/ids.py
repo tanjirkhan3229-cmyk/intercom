@@ -103,6 +103,7 @@ class IdPrefix:
     API_KEY = "key"
     CONTACT = "usr"
     COMPANY = "cmp"
+    ATTRIBUTE = "attr"
     CONVERSATION = "cnv"
     PART = "msg"
     ARTICLE = "art"

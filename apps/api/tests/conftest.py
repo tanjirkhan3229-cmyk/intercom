@@ -28,7 +28,7 @@ def _bootstrap_roles_and_extensions(host: str, port: int) -> None:
         host=host, port=port, user=_SUPERUSER, password=_SUPERPASS, dbname="relay", autocommit=True
     ) as conn:
         cur = conn.cursor()
-        for ext in ("citext", "vector", "pg_trgm", "pgcrypto"):
+        for ext in ("citext", "vector", "pg_trgm", "btree_gin", "pgcrypto"):
             cur.execute(f"CREATE EXTENSION IF NOT EXISTS {ext}")
         cur.execute(
             "DO $$ BEGIN "
@@ -68,24 +68,35 @@ def _run_migrations() -> None:
 
 @pytest.fixture(scope="session")
 def _database() -> Iterator[None]:
-    """Boot Postgres, set DSNs, bootstrap roles/extensions, run migrations. Session-scoped."""
-    from testcontainers.postgres import PostgresContainer
+    """Boot Postgres + Redis, set DSNs, bootstrap roles/extensions, run migrations.
 
-    with PostgresContainer(
-        "pgvector/pgvector:pg16",
-        username=_SUPERUSER,
-        password=_SUPERPASS,
-        dbname="relay",
-        driver="asyncpg",
-    ) as pg:
+    Session-scoped. Redis is needed by the CRM event firehose (async buffer + sync drain).
+    """
+    from testcontainers.postgres import PostgresContainer
+    from testcontainers.redis import RedisContainer
+
+    with (
+        PostgresContainer(
+            "pgvector/pgvector:pg16",
+            username=_SUPERUSER,
+            password=_SUPERPASS,
+            dbname="relay",
+            driver="asyncpg",
+        ) as pg,
+        RedisContainer("redis:7-alpine") as rc,
+    ):
         host = pg.get_container_host_ip()
         port = int(pg.get_exposed_port(5432))
+        redis_host = rc.get_container_host_ip()
+        redis_port = int(rc.get_exposed_port(6379))
 
         os.environ["DATABASE_URL"] = f"postgresql+asyncpg://app_rw:app_rw@{host}:{port}/relay"
         os.environ["DATABASE_URL_RO"] = f"postgresql+asyncpg://app_ro:app_ro@{host}:{port}/relay"
         os.environ["MIGRATION_DATABASE_URL"] = (
             f"postgresql+psycopg://migrator:migrator@{host}:{port}/relay"
         )
+        os.environ["REDIS_CACHE_URL"] = f"redis://{redis_host}:{redis_port}/0"
+        os.environ["REDIS_BROKER_URL"] = f"redis://{redis_host}:{redis_port}/1"
         os.environ["JWT_SIGNING_KEY"] = "test-signing-key-at-least-32-bytes-long!!"
         os.environ["SECRET_ENCRYPTION_KEY"] = "test-encryption-key-at-least-32-bytes!!"
         os.environ["ENVIRONMENT"] = "test"
@@ -101,19 +112,34 @@ def _database() -> Iterator[None]:
 
 @pytest.fixture(autouse=True)
 async def _fresh_engines(_database: None) -> AsyncIterator[None]:
-    """Rebind the app's async engines to the current test's event loop, then dispose."""
+    """Rebind the app's async engines + Redis clients to the current test, then dispose.
+
+    Also flushes the Redis cache DB so event buffers never leak between tests.
+    """
     import relay.core.db as db
+    import relay.core.redis as rds
 
     db._engine = None
     db._engine_ro = None
     db._sessionmaker = None
+    rds._async_client = None
+    if rds._sync_client is not None:
+        rds._sync_client.close()
+        rds._sync_client = None
+    rds.get_redis_sync().flushdb()
+
     yield
+
     for engine in (db._engine, db._engine_ro):
         if engine is not None:
             await engine.dispose()
     db._engine = None
     db._engine_ro = None
     db._sessionmaker = None
+    await rds.reset_async_redis()
+    if rds._sync_client is not None:
+        rds._sync_client.close()
+        rds._sync_client = None
 
 
 @pytest.fixture

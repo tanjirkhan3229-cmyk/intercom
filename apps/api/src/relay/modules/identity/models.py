@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import datetime as dt
 import uuid
+from typing import Any
 
 import sqlalchemy as sa
 from sqlalchemy import ForeignKey, Text, UniqueConstraint
@@ -34,7 +35,7 @@ class Workspace(UUIDPrimaryKey, TimestampMixin, Base):
 
     name: Mapped[str] = mapped_column(Text, nullable=False)
     slug: Mapped[str] = mapped_column(CITEXT, nullable=False, unique=True)
-    settings: Mapped[dict] = mapped_column(
+    settings: Mapped[dict[str, Any]] = mapped_column(
         JSONB, nullable=False, server_default=sa.text("'{}'::jsonb")
     )
 

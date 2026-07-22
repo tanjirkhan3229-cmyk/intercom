@@ -175,9 +175,18 @@ CREATE TABLE contacts (
 );
 CREATE UNIQUE INDEX contacts_ext ON contacts (workspace_id, external_id) WHERE external_id IS NOT NULL AND deleted_at IS NULL;
 CREATE UNIQUE INDEX contacts_email_user ON contacts (workspace_id, email) WHERE kind='user' AND email IS NOT NULL AND deleted_at IS NULL;
-CREATE INDEX contacts_name_trgm ON contacts USING gin (name gin_trgm_ops);      -- R8 typeahead
+CREATE INDEX contacts_name_trgm ON contacts USING gin (workspace_id, name gin_trgm_ops); -- R8 typeahead (btree_gin)
 CREATE INDEX contacts_custom ON contacts USING gin (custom jsonb_path_ops);      -- R5 attr predicates
 ```
+
+> **P0.2 clarification — trigram typeahead under RLS.** `contacts_name_trgm` leads with
+> `workspace_id` (via `btree_gin`), not a bare `gin(name)`, for two reasons: (1) it satisfies
+> the §5.1 "composite indexes lead with `workspace_id`" convention; (2) under **forced RLS**
+> `ILIKE`/`~~*` is *not leakproof*, so PostgreSQL will not use a bare `gin(name)` index for the
+> match (it defers the non-leakproof qual to a post-security filter and falls back to a Seq
+> Scan). The composite index is chosen because the leakproof `workspace_id` equality (the RLS
+> policy qual) is a usable index cond, scoping to the tenant and eliminating the Seq Scan; the
+> `ILIKE` is then a cheap filter over the tenant's contacts. Requires the `btree_gin` extension.
 
 W2 upsert is `INSERT … ON CONFLICT (workspace_id, external_id) DO UPDATE` — naturally idempotent; merges (email↔external_id collisions) are explicit jobs writing a `contact_merges` audit row. `attribute_definitions` gives `custom` its types/validation (app-enforced, spot-audited by a nightly checker — the JSONB-swamp guard).
 
@@ -195,7 +204,16 @@ CREATE INDEX events_brin ON events USING brin (created_at);
 CREATE INDEX events_contact ON events (workspace_id, contact_id, name, created_at); -- R3/R5 window queries
 ```
 
-Loaded by COPY batches (W3). **Segments never scan raw events:** `event_rollups (workspace_id, contact_id, event_name, day, count)` (daily, upserted by `analytics` workers) + `contacts.custom` carry R5; a segment is a stored predicate AST (JSONB) compiled to SQL over `contacts` + rollups. Membership for messaging is snapshotted at send time (W5) — no drifting mid-campaign.
+Loaded by COPY batches (W3). **P0.2 clarification — COPY under RLS:** PostgreSQL forbids
+`COPY FROM` on an RLS-enabled table (`COPY FROM not supported with row-level security`), so the
+`analytics` drain buffers events per-workspace in Redis and, per (workspace, chunk) in one
+transaction, `SET LOCAL app.ws` → `CREATE TEMP TABLE … ON COMMIT DROP` → `COPY … FROM STDIN`
+(temp tables have no RLS) → `INSERT INTO events SELECT …` through the parent (RLS `WITH CHECK`
+enforces isolation on the write path too). RLS stays enabled+forced; no BYPASSRLS runtime role
+is added. Monthly partitions are pre-created T+2 by `relay_ensure_partitions(parent, n)` —
+a SECURITY DEFINER function owned by `migrator`, EXECUTE-granted to `app_rw` — called by the
+`housekeeping` task (so app_rw never needs DDL); `relay_missing_partitions` drives the alert.
+**Segments never scan raw events:** `event_rollups (workspace_id, contact_id, event_name, day, count)` (daily, upserted by `analytics` workers) + `contacts.custom` carry R5; a segment is a stored predicate AST (JSONB) compiled to SQL over `contacts` + rollups. Membership for messaging is snapshotted at send time (W5) — no drifting mid-campaign.
 
 ### 5.5 Knowledge & retrieval (feeds RFC-003)
 

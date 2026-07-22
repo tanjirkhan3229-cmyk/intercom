@@ -11,6 +11,8 @@ from __future__ import annotations
 
 import uuid
 from collections.abc import Awaitable, Callable
+from contextvars import Token
+from typing import Any
 
 import jwt
 from starlette.middleware.base import BaseHTTPMiddleware
@@ -46,7 +48,7 @@ class TenancyMiddleware(BaseHTTPMiddleware):
         principal = _authenticate(request)
         request.state.principal = principal
 
-        tokens = []
+        tokens: list[Token[Any]] = []
         if principal is not None:
             tokens.append(workspace_id_var.set(principal.workspace_id))
             tokens.append(admin_id_var.set(principal.admin_id))

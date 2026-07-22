@@ -1,14 +1,11 @@
-"""The authenticated principal — passed to services so RBAC is checked in one place."""
+"""Re-export of the kernel :class:`Principal` (moved to ``relay.core.principal``).
+
+Kept as a stable import path for the identity module and its tests. New code should import
+from ``relay.core.principal`` directly.
+"""
 
 from __future__ import annotations
 
-import uuid
-from dataclasses import dataclass
+from relay.core.principal import Principal
 
-
-@dataclass(frozen=True)
-class Principal:
-    admin_id: uuid.UUID
-    workspace_id: uuid.UUID
-    role: str
-    kind: str = "admin"  # "admin" (JWT) | "api_key"
+__all__ = ["Principal"]

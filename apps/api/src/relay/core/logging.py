@@ -7,6 +7,7 @@ at process start (API, worker, beat).
 from __future__ import annotations
 
 import logging
+from typing import Any, cast
 
 import structlog
 
@@ -14,7 +15,9 @@ from relay.core.context import request_id_var, workspace_id_var
 from relay.settings import get_settings
 
 
-def _inject_context(_logger: object, _name: str, event: dict[str, object]) -> dict[str, object]:
+def _inject_context(
+    _logger: Any, _name: str, event: structlog.typing.EventDict
+) -> structlog.typing.EventDict:
     """Merge request/workspace ids into every log line when present."""
     rid = request_id_var.get()
     wid = workspace_id_var.get()
@@ -54,4 +57,4 @@ def configure_logging() -> None:
 
 
 def get_logger(name: str | None = None) -> structlog.stdlib.BoundLogger:
-    return structlog.get_logger(name)
+    return cast(structlog.stdlib.BoundLogger, structlog.get_logger(name))
