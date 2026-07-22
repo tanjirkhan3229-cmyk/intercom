@@ -9,6 +9,7 @@ from __future__ import annotations
 from typing import Any
 
 from fastapi import FastAPI, Request
+from fastapi.encoders import jsonable_encoder
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import ORJSONResponse
 
@@ -77,9 +78,14 @@ def register_exception_handlers(app: FastAPI) -> None:
 
     @app.exception_handler(RequestValidationError)
     async def _validation(_request: Request, exc: RequestValidationError) -> ORJSONResponse:
+        # jsonable_encoder first: pydantic validation errors can carry non-serializable
+        # objects in ``ctx`` (e.g. the ValueError from a model_validator), which orjson
+        # would otherwise choke on — turning a 422 into a 500.
         return ORJSONResponse(
             status_code=422,
             content=_envelope(
-                "validation_error", "Request validation failed", {"errors": exc.errors()}
+                "validation_error",
+                "Request validation failed",
+                {"errors": jsonable_encoder(exc.errors())},
             ),
         )

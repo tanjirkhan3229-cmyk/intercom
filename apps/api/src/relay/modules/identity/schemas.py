@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import datetime as dt
+from typing import Any
 
 from pydantic import BaseModel, EmailStr, Field
 
@@ -59,7 +60,7 @@ class AuthorizationUrl(BaseModel):
 
 class WorkspaceUpdate(BaseModel):
     name: str | None = Field(default=None, min_length=1, max_length=120)
-    settings: dict | None = None
+    settings: dict[str, Any] | None = None
 
 
 class MembershipOut(BaseModel):

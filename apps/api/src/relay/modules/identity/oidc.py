@@ -95,7 +95,8 @@ async def exchange_code(code: str) -> dict[str, Any]:
         resp = await client.post(TOKEN_ENDPOINT, data=data)
     if resp.status_code != 200:
         raise OIDCError("token exchange failed")
-    return resp.json()
+    tokens: dict[str, Any] = resp.json()
+    return tokens
 
 
 def verify_id_token(id_token: str, *, expected_nonce: str) -> OIDCIdentity:

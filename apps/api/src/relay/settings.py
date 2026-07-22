@@ -61,6 +61,13 @@ class Settings(BaseSettings):
     google_oidc_redirect_uri: str | None = None
 
     @property
+    def database_url_psycopg(self) -> str:
+        """Plain (driverless) DSN for raw psycopg use in sync Celery tasks (e.g. the events
+        COPY drain). Derived from the async ``database_url`` by dropping the ``+asyncpg`` tag
+        so ``psycopg.connect`` accepts it — same ``app_rw`` credentials, RLS still forced."""
+        return self.database_url.replace("+asyncpg", "").replace("+psycopg", "")
+
+    @property
     def is_production(self) -> bool:
         return self.environment == "production"
 

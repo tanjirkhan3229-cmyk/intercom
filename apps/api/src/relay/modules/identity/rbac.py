@@ -1,44 +1,11 @@
-"""Role-based access control — the single choke point (RFC-001 §10).
+"""Re-export of the kernel RBAC choke point (moved to ``relay.core.rbac``, RFC-001 §10).
 
-Every permission decision in the identity (and later, every) module goes through
-:func:`authorize`. Keeping it in one function means the policy is auditable and can't drift
-across scattered ``if role == ...`` checks.
+Kept as a stable import path for the identity module and its tests. New code should import
+from ``relay.core.rbac`` directly.
 """
 
 from __future__ import annotations
 
-from relay.core.errors import PermissionDeniedError
+from relay.core.rbac import ROLE_RANK, Role, authorize, role_at_least
 
-from .principal import Principal
-
-
-class Role:
-    OWNER = "owner"
-    ADMIN = "admin"
-    AGENT = "agent"
-    RESTRICTED = "restricted"
-
-
-# Higher number = more privilege.
-ROLE_RANK: dict[str, int] = {
-    Role.RESTRICTED: 0,
-    Role.AGENT: 1,
-    Role.ADMIN: 2,
-    Role.OWNER: 3,
-}
-
-
-def role_at_least(role: str, minimum: str) -> bool:
-    return ROLE_RANK.get(role, -1) >= ROLE_RANK.get(minimum, 999)
-
-
-def authorize(principal: Principal, *, min_role: str) -> None:
-    """Raise :class:`PermissionDeniedError` unless ``principal`` meets ``min_role``.
-
-    The one function services call: ``authorize(principal, min_role=Role.ADMIN)``.
-    """
-    if not role_at_least(principal.role, min_role):
-        raise PermissionDeniedError(
-            f"requires role '{min_role}' or higher",
-            details={"role": principal.role, "required": min_role},
-        )
+__all__ = ["ROLE_RANK", "Role", "authorize", "role_at_least"]
