@@ -1,0 +1,52 @@
+:root {
+  --relay-primary: #2563eb;
+  --relay-fg: #0f172a;
+  --relay-muted: #64748b;
+  --relay-border: #e2e8f0;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  font-family: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  color: var(--relay-fg);
+}
+
+.relay-panel {
+  display: flex;
+  flex-direction: column;
+  height: 100vh;
+}
+
+.relay-header {
+  background: var(--relay-primary);
+  color: #fff;
+  padding: 16px;
+  font-weight: 600;
+}
+
+.relay-body {
+  flex: 1;
+  padding: 16px;
+}
+
+.relay-muted {
+  color: var(--relay-muted);
+  font-size: 14px;
+}
+
+.relay-footer {
+  border-top: 1px solid var(--relay-border);
+  padding: 12px;
+}
+
+.relay-input {
+  width: 100%;
+  padding: 8px 12px;
+  border: 1px solid var(--relay-border);
+  border-radius: 8px;
+  font-size: 14px;
+}

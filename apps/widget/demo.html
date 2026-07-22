@@ -1,0 +1,26 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Relay widget — demo host page</title>
+  </head>
+  <body>
+    <h1>Demo host page</h1>
+    <p>This mimics a customer site embedding the Relay loader. Run <code>npm run build</code>,
+      then serve this directory and open demo.html.</p>
+
+    <!-- The snippet a customer pastes: the async loader + a queued boot call. -->
+    <script>
+      (function (w) {
+        w.relay =
+          w.relay ||
+          function () {
+            (w.relay.q = w.relay.q || []).push(arguments);
+          };
+      })(window);
+      relay("boot", { app_id: "wrk_demo", app_url: "http://localhost:5173" });
+    </script>
+    <script async src="./dist/relay.js"></script>
+  </body>
+</html>

@@ -92,11 +92,10 @@ async def session_scope(workspace_id: uuid.UUID | None = None) -> AsyncIterator[
     (which additionally derives the workspace from the authenticated principal).
     """
     sessionmaker = get_sessionmaker()
-    async with sessionmaker() as session:
-        async with session.begin():
-            if workspace_id is not None:
-                await set_workspace_guc(session, workspace_id)
-            yield session
+    async with sessionmaker() as session, session.begin():
+        if workspace_id is not None:
+            await set_workspace_guc(session, workspace_id)
+        yield session
 
 
 async def db_healthcheck() -> bool:
@@ -106,5 +105,5 @@ async def db_healthcheck() -> bool:
         async with get_engine().connect() as conn:
             await conn.execute(text("SELECT 1"))
         return True
-    except Exception:  # noqa: BLE001 — health probe reports down, never raises
+    except Exception:
         return False

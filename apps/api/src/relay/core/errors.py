@@ -79,6 +79,7 @@ def register_exception_handlers(app: FastAPI) -> None:
     async def _validation(_request: Request, exc: RequestValidationError) -> ORJSONResponse:
         return ORJSONResponse(
             status_code=422,
-            content=_envelope("validation_error", "Request validation failed",
-                              {"errors": exc.errors()}),
+            content=_envelope(
+                "validation_error", "Request validation failed", {"errors": exc.errors()}
+            ),
         )

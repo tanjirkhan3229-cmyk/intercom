@@ -33,9 +33,7 @@ class Base(DeclarativeBase):
 class UUIDPrimaryKey:
     """App-generated UUIDv7 primary key (time-ordered; safe to expose via base62)."""
 
-    id: Mapped[uuid.UUID] = mapped_column(
-        PgUUID(as_uuid=True), primary_key=True, default=uuid7
-    )
+    id: Mapped[uuid.UUID] = mapped_column(PgUUID(as_uuid=True), primary_key=True, default=uuid7)
 
 
 class TimestampMixin:

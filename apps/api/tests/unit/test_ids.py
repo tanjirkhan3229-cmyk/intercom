@@ -2,14 +2,14 @@
 
 from __future__ import annotations
 
+import pytest
+
 from relay.core.ids import (
     IdPrefix,
     decode_public_id,
     encode_public_id,
     uuid7,
 )
-
-import pytest
 
 
 def test_uuid7_is_version_7_and_variant_rfc4122() -> None:

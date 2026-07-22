@@ -1,0 +1,199 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+# Cancel superseded runs on the same ref.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  # ---- Change detection: path filters so unrelated apps don't rebuild (RFC-001 §13) ----
+  changes:
+    runs-on: ubuntu-latest
+    outputs:
+      api: ${{ steps.filter.outputs.api }}
+      web: ${{ steps.filter.outputs.web }}
+      widget: ${{ steps.filter.outputs.widget }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dorny/paths-filter@v3
+        id: filter
+        with:
+          filters: |
+            api:
+              - 'apps/api/**'
+              - 'scripts/check_migrations.py'
+              - '.github/workflows/ci.yml'
+            web:
+              - 'apps/web/**'
+              - 'packages/**'
+              - 'package.json'
+              - 'package-lock.json'
+            widget:
+              - 'apps/widget/**'
+              - 'packages/**'
+              - 'package.json'
+              - 'package-lock.json'
+
+  # ---- Cheapest first: lint/typecheck ----
+  api-lint:
+    needs: changes
+    if: ${{ needs.changes.outputs.api == 'true' }}
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: apps/api
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+        with:
+          enable-cache: true
+      - run: uv python install 3.12
+      - run: uv sync --dev
+      - name: ruff (lint + format)
+        run: |
+          uv run ruff check .
+          uv run ruff format --check .
+      - name: mypy
+        run: uv run mypy src
+      - name: import-linter (module boundaries)
+        run: uv run lint-imports --config .importlinter
+      - name: migration lint (no non-concurrent index on large tables)
+        run: uv run python ../../scripts/check_migrations.py
+
+  web-lint:
+    needs: changes
+    if: ${{ needs.changes.outputs.web == 'true' }}
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - name: typecheck packages
+        run: |
+          npm run typecheck --workspace @relay/shared
+          npm run typecheck --workspace @relay/sdk-ts
+      - name: web eslint + tsc
+        run: |
+          npm run lint --workspace @relay/web
+          npm run typecheck --workspace @relay/web
+
+  # ---- Then unit tests ----
+  api-unit:
+    needs: [changes, api-lint]
+    if: ${{ needs.changes.outputs.api == 'true' }}
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: apps/api
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+        with:
+          enable-cache: true
+      - run: uv python install 3.12
+      - run: uv sync --dev
+      - name: unit tests
+        run: uv run pytest -m "not integration" -q
+
+  # ---- Then integration tests (testcontainers: Postgres + Redis) ----
+  api-integration:
+    needs: [changes, api-unit]
+    if: ${{ needs.changes.outputs.api == 'true' }}
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: apps/api
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+        with:
+          enable-cache: true
+      - run: uv python install 3.12
+      - run: uv sync --dev
+      - name: integration tests (testcontainers)
+        run: uv run pytest -m integration -q
+
+  # ---- Widget: typecheck, build, enforce bundle-size budget ----
+  widget:
+    needs: changes
+    if: ${{ needs.changes.outputs.widget == 'true' }}
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - name: typecheck
+        run: npm run typecheck --workspace @relay/widget
+      - name: build (app + loader)
+        run: npm run build --workspace @relay/widget
+      - name: bundle-size budget (≤ 50 KB gz)
+        run: npm run size --workspace @relay/widget
+
+  # ---- SDK contract: regenerate the TS client from the live OpenAPI spec ----
+  sdk-contract:
+    needs: [changes, api-lint]
+    if: ${{ needs.changes.outputs.api == 'true' }}
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+        with:
+          enable-cache: true
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: uv python install 3.12
+      - name: dump OpenAPI spec
+        working-directory: apps/api
+        run: |
+          uv sync --dev
+          uv run relay openapi > ../../openapi.json
+      - run: npm ci
+      - name: generate SDK types
+        run: npm run generate --workspace @relay/sdk-ts
+      - name: typecheck generated SDK
+        run: npm run typecheck --workspace @relay/sdk-ts
+
+  # ---- Build once, tag by SHA (RFC-001 §13). Push to GHCR only on main. ----
+  build-api-image:
+    needs: [changes, api-unit, api-integration]
+    if: ${{ needs.changes.outputs.api == 'true' }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/setup-buildx-action@v3
+      - name: Log in to GHCR (main only)
+        if: ${{ github.ref == 'refs/heads/main' }}
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Build (and push on main) — tagged by SHA
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: apps/api/Dockerfile
+          push: ${{ github.ref == 'refs/heads/main' }}
+          load: ${{ github.ref != 'refs/heads/main' }}
+          tags: ghcr.io/${{ github.repository }}/relay-api:${{ github.sha }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max

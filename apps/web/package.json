@@ -10,6 +10,7 @@
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
+    "@radix-ui/react-slot": "^1.1.0",
     "@relay/sdk-ts": "*",
     "@relay/shared": "*",
     "class-variance-authority": "^0.7.0",

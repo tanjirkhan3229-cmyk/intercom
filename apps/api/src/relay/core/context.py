@@ -13,6 +13,7 @@ from contextvars import ContextVar
 request_id_var: ContextVar[str | None] = ContextVar("request_id", default=None)
 workspace_id_var: ContextVar[uuid.UUID | None] = ContextVar("workspace_id", default=None)
 admin_id_var: ContextVar[uuid.UUID | None] = ContextVar("admin_id", default=None)
+role_var: ContextVar[str | None] = ContextVar("role", default=None)
 
 
 def current_workspace_id() -> uuid.UUID | None:
