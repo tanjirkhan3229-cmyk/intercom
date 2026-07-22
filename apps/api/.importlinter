@@ -1,0 +1,37 @@
+# Module boundary enforcement (RFC-001 §6.2).
+#
+# The modular monolith stays splittable only if modules never reach into each other's
+# internals. Feature modules may talk to each other ONLY through another module's
+# `service` interface or its `events` (domain events on the outbox), and may always use
+# the shared `relay.core` kernel. Everything else — importing another module's `models`
+# (its tables), `router`, `tasks`, etc. — is forbidden.
+#
+# To see it bite: add `from relay.modules.crm import models` inside
+# relay/modules/messaging/service.py and run `lint-imports` — the contract breaks.
+
+[importlinter]
+root_package = relay
+
+[importlinter:contract:module-independence]
+name = Feature modules are independent (cross-module access via service/events only)
+type = independence
+modules =
+    relay.modules.identity
+    relay.modules.crm
+    relay.modules.messaging
+    relay.modules.channels
+    relay.modules.tickets
+    relay.modules.knowledge
+    relay.modules.ai
+    relay.modules.automation
+    relay.modules.outbound
+    relay.modules.reporting
+    relay.modules.platform
+    relay.modules.billing
+# Allowed cross-module channels: another module's public service interface + its events.
+ignore_imports =
+    relay.modules.** -> relay.modules.*.service
+    relay.modules.** -> relay.modules.*.events
+# No cross-module imports exist yet in the scaffold, so the allow-list matches nothing.
+# Keep CI green until the first legitimate service call lands (P0.2+), then flip to `error`.
+unmatched_ignore_imports_alerting = none

@@ -1,0 +1,192 @@
+# Relay dev stack — one Postgres (pgvector), two Redis, MinIO, Mailpit, + app tier.
+# Mirrors RFC-001 §6.1 runtime shapes at dev scale. Not for production (see infra/terraform, phase 0.12).
+name: relay
+
+x-api-env: &api-env
+  ENVIRONMENT: ${ENVIRONMENT:-development}
+  LOG_LEVEL: ${LOG_LEVEL:-INFO}
+  DATABASE_URL: ${DATABASE_URL}
+  DATABASE_URL_RO: ${DATABASE_URL_RO}
+  MIGRATION_DATABASE_URL: ${MIGRATION_DATABASE_URL}
+  REDIS_CACHE_URL: ${REDIS_CACHE_URL}
+  REDIS_BROKER_URL: ${REDIS_BROKER_URL}
+  S3_ENDPOINT_URL: ${S3_ENDPOINT_URL}
+  S3_REGION: ${S3_REGION}
+  S3_ACCESS_KEY_ID: ${S3_ACCESS_KEY_ID}
+  S3_SECRET_ACCESS_KEY: ${S3_SECRET_ACCESS_KEY}
+  S3_BUCKET_ATTACHMENTS: ${S3_BUCKET_ATTACHMENTS}
+  S3_BUCKET_EXPORTS: ${S3_BUCKET_EXPORTS}
+  SMTP_HOST: ${SMTP_HOST}
+  SMTP_PORT: ${SMTP_PORT}
+  JWT_SIGNING_KEY: ${JWT_SIGNING_KEY}
+  SECRET_ENCRYPTION_KEY: ${SECRET_ENCRYPTION_KEY}
+  ACCESS_TOKEN_TTL_SECONDS: ${ACCESS_TOKEN_TTL_SECONDS:-900}
+  REFRESH_TOKEN_TTL_SECONDS: ${REFRESH_TOKEN_TTL_SECONDS:-2592000}
+  GOOGLE_OIDC_CLIENT_ID: ${GOOGLE_OIDC_CLIENT_ID:-}
+  GOOGLE_OIDC_CLIENT_SECRET: ${GOOGLE_OIDC_CLIENT_SECRET:-}
+  GOOGLE_OIDC_REDIRECT_URI: ${GOOGLE_OIDC_REDIRECT_URI:-}
+
+services:
+  postgres:
+    image: pgvector/pgvector:pg16
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-relay}
+      POSTGRES_USER: ${POSTGRES_SUPERUSER:-postgres}
+      POSTGRES_PASSWORD: ${POSTGRES_SUPERUSER_PASSWORD:-postgres}
+      # consumed by init/01-roles.sh
+      APP_RW_PASSWORD: ${APP_RW_PASSWORD:-app_rw_dev}
+      APP_RO_PASSWORD: ${APP_RO_PASSWORD:-app_ro_dev}
+      MIGRATOR_PASSWORD: ${MIGRATOR_PASSWORD:-migrator_dev}
+    command:
+      # Tuned for dev; production values live in Terraform (RFC-002 §9).
+      - postgres
+      - -c
+      - log_lock_waits=on
+      - -c
+      - log_min_duration_statement=500
+    ports:
+      - "5432:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+      - ./postgres/init:/docker-entrypoint-initdb.d:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_SUPERUSER:-postgres} -d ${POSTGRES_DB:-relay}"]
+      interval: 3s
+      timeout: 3s
+      retries: 20
+
+  redis-cache:
+    image: redis:7-alpine
+    command: ["redis-server", "--save", "", "--appendonly", "no"]
+    ports:
+      - "6379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 3s
+      timeout: 3s
+      retries: 20
+
+  redis-broker:
+    # AOF on: the outbox makes critical enqueues re-derivable, but AOF limits replay churn (RFC-001 §6.4).
+    image: redis:7-alpine
+    command: ["redis-server", "--appendonly", "yes", "--appendfsync", "everysec"]
+    ports:
+      - "6380:6379"
+    volumes:
+      - brokerdata:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 3s
+      timeout: 3s
+      retries: 20
+
+  minio:
+    image: minio/minio:latest
+    command: ["server", "/data", "--console-address", ":9001"]
+    environment:
+      MINIO_ROOT_USER: ${S3_ACCESS_KEY_ID:-relay}
+      MINIO_ROOT_PASSWORD: ${S3_SECRET_ACCESS_KEY:-relay_dev_secret}
+    ports:
+      - "9000:9000"
+      - "9001:9001"
+    volumes:
+      - miniodata:/data
+    healthcheck:
+      test: ["CMD", "mc", "ready", "local"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+
+  createbuckets:
+    # One-shot: create the attachment/export buckets, then exit 0.
+    image: minio/mc:latest
+    depends_on:
+      minio:
+        condition: service_healthy
+    entrypoint: >
+      /bin/sh -c "
+      mc alias set local http://minio:9000 ${S3_ACCESS_KEY_ID:-relay} ${S3_SECRET_ACCESS_KEY:-relay_dev_secret} &&
+      mc mb -p local/${S3_BUCKET_ATTACHMENTS:-relay-attachments} &&
+      mc mb -p local/${S3_BUCKET_EXPORTS:-relay-exports} &&
+      echo 'buckets ready'
+      "
+    restart: "no"
+
+  mailpit:
+    image: axllent/mailpit:latest
+    ports:
+      - "1025:1025"   # SMTP sink
+      - "8025:8025"   # web UI
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://localhost:8025/readyz"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+
+  # ---- Application tier (RFC-001 §6.1) ----
+
+  migrate:
+    # One-shot: apply Alembic migrations as the BYPASSRLS `migrator` role, then exit.
+    build:
+      context: ..
+      dockerfile: apps/api/Dockerfile
+    environment: *api-env
+    command: ["alembic", "upgrade", "head"]
+    depends_on:
+      postgres:
+        condition: service_healthy
+    restart: "no"
+
+  api:
+    build:
+      context: ..
+      dockerfile: apps/api/Dockerfile
+    environment: *api-env
+    command:
+      ["uvicorn", "relay.main:app", "--host", "0.0.0.0", "--port", "8000", "--reload"]
+    ports:
+      - "8000:8000"
+    volumes:
+      - ../apps/api/src:/app/src   # hot reload in dev
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis-cache:
+        condition: service_healthy
+      redis-broker:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://localhost:8000/healthz').status==200 else 1)"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+
+  worker:
+    build:
+      context: ..
+      dockerfile: apps/api/Dockerfile
+    environment: *api-env
+    command:
+      ["celery", "-A", "relay.worker.celery_app", "worker",
+       "-Q", "interactive,ingest,send.email,send.channels,webhooks,analytics,housekeeping,ai.interactive,ai.batch",
+       "--concurrency", "4", "-l", "INFO"]
+    depends_on:
+      redis-broker:
+        condition: service_healthy
+      postgres:
+        condition: service_healthy
+
+  beat:
+    build:
+      context: ..
+      dockerfile: apps/api/Dockerfile
+    environment: *api-env
+    command: ["celery", "-A", "relay.worker.celery_app", "beat", "-l", "INFO"]
+    depends_on:
+      redis-broker:
+        condition: service_healthy
+
+volumes:
+  pgdata:
+  brokerdata:
+  miniodata:
