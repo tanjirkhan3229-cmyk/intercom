@@ -143,3 +143,64 @@ class TypingIn(BaseModel):
     """A no-body typing ping is fine; the actor is the authenticated agent."""
 
     typing: bool = True
+
+
+# --- Widget (messenger) BFF ---------------------------------------------------
+
+
+class WidgetBootUser(BaseModel):
+    """Optional identity the host page supplies. ``external_id`` is the tenant's own user id;
+    with identity verification on it must be accompanied by a valid ``user_hash``."""
+
+    external_id: str | None = None
+    email: str | None = None
+    name: str | None = None
+
+
+class WidgetBootRequest(BaseModel):
+    app_id: str  # public workspace id (wrk_...) — safe to embed on any customer page
+    user: WidgetBootUser | None = None
+    user_hash: str | None = None
+    # Reload continuity when third-party cookies are blocked: the iframe re-sends the session
+    # token it stored. The httpOnly cookie is the primary mechanism; this is the fallback.
+    resume_token: str | None = None
+
+
+class MessengerConfig(BaseModel):
+    """Public messenger config the widget themes itself from (no secrets)."""
+
+    primary_color: str
+    launcher_position: str  # "left" | "right"
+    greeting: str | None = None
+    expected_reply_time: str | None = None  # office-hours model lands in P1.7; free-form for now
+    office_hours: dict[str, Any] | None = None
+    identity_verification_enabled: bool
+
+
+class WidgetContactOut(BaseModel):
+    id: str
+    kind: str  # "user" (verified) | "lead" (anonymous)
+    email: str | None = None
+    name: str | None = None
+
+
+class WidgetBootResponse(BaseModel):
+    session_token: str
+    contact: WidgetContactOut
+    config: MessengerConfig
+    conversations: list[ConversationOut]
+
+
+class WidgetStartConversation(BaseModel):
+    body: str = Field(min_length=1)
+    attachments: list[dict[str, Any]] = Field(default_factory=list)
+
+
+class WidgetReplyIn(BaseModel):
+    body: str = Field(min_length=1)
+    attachments: list[dict[str, Any]] = Field(default_factory=list)
+
+
+class WidgetRatingIn(BaseModel):
+    rating: int = Field(ge=1, le=5)
+    remark: str | None = None

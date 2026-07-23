@@ -138,9 +138,11 @@ jobs:
       - run: npm ci
       - name: typecheck
         run: npm run typecheck --workspace @relay/widget
-      - name: build (app + loader)
+      - name: rollout cohort self-check
+        run: npm run test --workspace @relay/widget
+      - name: build (app + loader + bootstrap)
         run: npm run build --workspace @relay/widget
-      - name: bundle-size budget (≤ 50 KB gz)
+      - name: bundle-size budget (app ≤ 50 KB, loader/bootstrap ≤ 5 KB gz)
         run: npm run size --workspace @relay/widget
 
   # ---- SDK contract: regenerate the TS client from the live OpenAPI spec ----

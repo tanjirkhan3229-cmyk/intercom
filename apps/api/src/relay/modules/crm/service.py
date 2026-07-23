@@ -227,6 +227,71 @@ async def identify(
     return contact_out(contact)
 
 
+# --- Contacts: widget boot (contact-facing, no agent authz) -------------------
+
+
+async def resolve_widget_contact(
+    session: AsyncSession,
+    *,
+    workspace_id: uuid.UUID,
+    verified: bool,
+    external_id: str | None = None,
+    email: str | None = None,
+    name: str | None = None,
+    cookie_contact_id: uuid.UUID | None = None,
+) -> schemas.ContactOut:
+    """Resolve the contact a widget boot represents. Called by the messaging widget BFF, *not*
+    an agent — the caller has already established trust (verified HMAC, or an anonymous visitor).
+
+    - **Verified** (identity verification on): idempotent upsert of a ``user`` keyed on
+      ``external_id`` (same partial-unique index as :func:`identify`), so repeat visits and
+      concurrent boots converge on one contact.
+    - **Anonymous:** resume the cookie's lead if it still exists in this workspace (RLS scopes
+      the lookup), else create a fresh ``lead``. Provided name/email fill only blank fields — an
+      unverified visitor never overwrites known data.
+    """
+    if verified:
+        if not external_id:
+            raise ValidationError("identity verification requires user.external_id")
+        stmt = (
+            pg_insert(Contact)
+            .values(
+                workspace_id=workspace_id,
+                kind="user",
+                external_id=external_id,
+                email=email,
+                name=name,
+            )
+            .on_conflict_do_update(
+                index_elements=[Contact.workspace_id, Contact.external_id],
+                index_where=sa.and_(Contact.external_id.isnot(None), Contact.deleted_at.is_(None)),
+                set_={
+                    "email": func.coalesce(Contact.email, email),
+                    "name": func.coalesce(Contact.name, name),
+                },
+            )
+            .returning(Contact)
+        )
+        contact = (await session.execute(stmt)).scalar_one()
+        await session.flush()
+        return contact_out(contact)
+
+    if cookie_contact_id is not None:
+        existing = await session.get(Contact, cookie_contact_id)
+        if existing is not None and existing.deleted_at is None:
+            if name and not existing.name:
+                existing.name = name
+            if email and not existing.email:
+                existing.email = email
+            await session.flush()
+            return contact_out(existing)
+
+    lead = Contact(workspace_id=workspace_id, kind="lead", email=email, name=name, custom={})
+    session.add(lead)
+    await session.flush()
+    return contact_out(lead)
+
+
 # --- Contacts: CRUD -----------------------------------------------------------
 
 

@@ -7,8 +7,14 @@
   </head>
   <body>
     <h1>Demo host page</h1>
-    <p>This mimics a customer site embedding the Relay loader. Run <code>npm run build</code>,
-      then serve this directory and open demo.html.</p>
+    <p>
+      This mimics a customer site embedding the Relay loader. Run <code>npm run build</code>, serve
+      this directory (e.g. <code>npx serve apps/widget</code>), then open <code>demo.html</code>.
+    </p>
+    <p>
+      Replace <code>app_id</code> with a real workspace id and point <code>api_url</code> at a
+      running API for a full round-trip; the launcher + iframe inject regardless.
+    </p>
 
     <!-- The snippet a customer pastes: the async loader + a queued boot call. -->
     <script>
@@ -19,7 +25,12 @@
             (w.relay.q = w.relay.q || []).push(arguments);
           };
       })(window);
-      relay("boot", { app_id: "wrk_demo", app_url: "http://localhost:5173" });
+      relay("boot", {
+        app_id: "wrk_demo000000000000000000",
+        // Same-origin built app + local API. In prod these are the CDN app + api.relay origins.
+        app_url: location.origin + "/dist/index.html",
+        api_url: "http://localhost:8000",
+      });
     </script>
     <script async src="./dist/relay.js"></script>
   </body>

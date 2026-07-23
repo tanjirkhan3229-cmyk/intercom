@@ -5,12 +5,15 @@
   "type": "module",
   "scripts": {
     "dev": "vite",
-    "build": "vite build && vite build --config vite.loader.config.ts",
+    "build": "vite build && vite build --config vite.loader.config.ts && vite build --config vite.bootstrap.config.ts",
     "preview": "vite preview",
     "typecheck": "tsc --noEmit",
-    "size": "node scripts/check-size.mjs"
+    "test": "esbuild src/rollout.test.ts --bundle --format=esm --platform=node | node --input-type=module",
+    "size": "node scripts/check-size.mjs",
+    "publish-bundle": "node scripts/publish.mjs"
   },
   "dependencies": {
+    "@relay/shared": "*",
     "preact": "^10.24.3"
   },
   "devDependencies": {
