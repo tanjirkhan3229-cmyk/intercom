@@ -140,6 +140,25 @@ class Settings(BaseSettings):
         default="dev-help-center-revalidate-secret", min_length=8
     )
 
+    # --- Public API (P0.11, RFC-001 §10) ---
+    # Per-workspace token bucket applied ONLY to API-key traffic (the first-party agent app uses
+    # JWTs and is never rate-limited here). ``capacity`` = burst; ``refill`` = tokens/sec. Tests
+    # set tiny values to force a 429.
+    public_api_rate_limit_enabled: bool = True
+    public_api_rate_capacity: int = 120
+    public_api_rate_refill_per_sec: float = 2.0
+
+    # --- Webhooks (P0.11, RFC-001 §6.7, §10) ---
+    webhook_delivery_timeout_seconds: float = 10.0
+    webhook_max_retry_hours: int = 72
+    webhook_breaker_threshold: int = 5
+    webhook_breaker_cooldown_seconds: int = 60
+    webhook_auto_disable_failures: int = 20
+    webhook_signature_tolerance_seconds: int = 300
+    # SSRF egress guard: when False (prod), webhook URLs must be https and must not resolve to
+    # private/loopback/link-local/metadata IPs. Tests/dev set True to allow a localhost receiver.
+    webhook_allow_private_targets: bool = False
+
     @property
     def database_url_psycopg(self) -> str:
         """Plain (driverless) DSN for raw psycopg use in sync Celery tasks (e.g. the events

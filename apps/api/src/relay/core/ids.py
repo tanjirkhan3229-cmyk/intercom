@@ -116,3 +116,7 @@ class IdPrefix:
     CHANNEL_ACCOUNT = "cha"
     SUPPRESSION = "sup"
     EMAIL_MESSAGE = "eml"
+    # webhooks module (P0.11)
+    WEBHOOK_SUBSCRIPTION = "whk"
+    WEBHOOK_DELIVERY = "whd"
+    WEBHOOK_EVENT = "evt"  # opaque public event id carried in the delivered payload

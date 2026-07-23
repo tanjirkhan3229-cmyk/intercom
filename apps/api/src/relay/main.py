@@ -18,6 +18,7 @@ from relay import __version__, health
 from relay.core.errors import register_exception_handlers
 from relay.core.logging import configure_logging, get_logger
 from relay.core.middleware import RequestContextMiddleware
+from relay.core.public_api import PublicApiMiddleware
 from relay.modules.billing.router import router as billing_router
 from relay.modules.channels.router import router as channels_router
 from relay.modules.crm.router import router as crm_router
@@ -27,6 +28,7 @@ from relay.modules.knowledge.router import router as knowledge_router
 from relay.modules.messaging.router import router as messaging_router
 from relay.modules.platform.router import router as platform_router
 from relay.modules.reporting.router import router as reporting_router
+from relay.modules.webhooks.router import router as webhooks_router
 
 log = get_logger(__name__)
 
@@ -49,6 +51,9 @@ def create_app() -> FastAPI:
 
     # Middleware runs outermost-first; add_middleware stacks in reverse, so the last one added
     # wraps the earlier ones. CORS must be outermost to answer preflight before auth runs.
+    # PublicApiMiddleware is added FIRST → innermost: it runs after TenancyMiddleware resolves the
+    # principal, and no-ops for everything except API-key traffic (P0.11).
+    app.add_middleware(PublicApiMiddleware)
     app.add_middleware(TenancyMiddleware)
     app.add_middleware(RequestContextMiddleware)
     # The messenger widget embeds on any customer origin and the agent app runs on its own
@@ -62,6 +67,12 @@ def create_app() -> FastAPI:
         allow_credentials=True,
         allow_methods=["GET", "POST", "PATCH", "DELETE", "OPTIONS"],
         allow_headers=["Authorization", "Content-Type", "Idempotency-Key"],
+        expose_headers=[
+            "Retry-After",
+            "X-RateLimit-Limit",
+            "X-RateLimit-Remaining",
+            "X-RateLimit-Reset",
+        ],
     )
     register_exception_handlers(app)
 
@@ -77,6 +88,7 @@ def create_app() -> FastAPI:
     app.include_router(platform_router, prefix="/v0")
     app.include_router(channels_router, prefix="/v0")
     app.include_router(reporting_router, prefix="/v0")
+    app.include_router(webhooks_router, prefix="/v0")
 
     return app
 

@@ -17,6 +17,11 @@ class Principal:
     workspace_id: uuid.UUID
     role: str
     kind: str = "admin"  # "admin" (JWT) | "api_key"
+    # Public-API scopes for an ``api_key`` principal (e.g. ``("read", "write")``); empty for JWT
+    # principals, whose access is governed by ``role`` alone. Read by the public-API middleware.
+    # (An api_key principal keeps a real ``admin_id`` — the key's ``created_by`` — so no code path
+    # sees ``admin_id | None``; a key whose creator was deleted is rejected at auth.)
+    scopes: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)

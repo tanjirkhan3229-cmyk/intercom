@@ -196,6 +196,8 @@ services:
        "-Q", "interactive,ingest,send.email,send.channels,webhooks,analytics,housekeeping,ai.interactive,ai.batch",
        "--concurrency", "4", "-l", "INFO"]
     depends_on:
+      migrate:
+        condition: service_completed_successfully
       redis-broker:
         condition: service_healthy
       postgres:
@@ -208,6 +210,8 @@ services:
     environment: *api-env
     command: ["celery", "-A", "relay.worker.celery_app", "beat", "-l", "INFO"]
     depends_on:
+      migrate:
+        condition: service_completed_successfully
       redis-broker:
         condition: service_healthy
 
@@ -263,6 +267,25 @@ services:
       postgres:
         condition: service_healthy
       redis-cache:
+        condition: service_healthy
+
+  webhook-dispatch:
+    # Consumes `relay:outbox` and creates webhook_deliveries rows + enqueues the `webhooks` queue
+    # (P0.11). Never makes the outbound HTTP call itself — the delivery task does, so a slow
+    # customer endpoint can't block the stream or other tenants. Single-instance stream drainer.
+    build:
+      context: ..
+      dockerfile: apps/api/Dockerfile
+    environment: *api-env
+    command: ["relay", "webhook-dispatch"]
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+      postgres:
+        condition: service_healthy
+      redis-cache:
+        condition: service_healthy
+      redis-broker:
         condition: service_healthy
 
 volumes:

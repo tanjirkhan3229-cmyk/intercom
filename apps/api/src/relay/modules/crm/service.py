@@ -27,6 +27,7 @@ from sqlalchemy import func, select
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from relay.core import outbox
 from relay.core.errors import ConflictError, NotFoundError, ValidationError
 from relay.core.ids import IdPrefix, decode_public_id, encode_public_id
 from relay.core.pagination import Page, clamp_limit
@@ -34,8 +35,34 @@ from relay.core.principal import Principal
 from relay.core.rbac import Role, authorize
 from relay.core.redis import get_redis
 
-from . import schemas
+from . import events, schemas
 from .models import AttributeDefinition, Company, Contact, ContactCompany, Event
+
+
+def _contact_payload(c: Contact) -> dict[str, Any]:
+    return {
+        "workspace_id": encode_public_id(IdPrefix.WORKSPACE, c.workspace_id),
+        "contact_id": encode_public_id(IdPrefix.CONTACT, c.id),
+        "kind": c.kind,
+        "email": c.email,
+        "external_id": c.external_id,
+    }
+
+
+async def _emit_contact(session: AsyncSession, contact: Contact, *, created: bool) -> None:
+    """Emit ``crm.contact.created``/``.updated`` on the outbox in the caller's txn (master rule 2).
+
+    Downstream the webhooks dispatch consumer (P0.11) maps these to the public ``contact.created``
+    / ``contact.updated`` webhook topics.
+    """
+    await outbox.emit(
+        session,
+        aggregate=events.AGGREGATE_CONTACT,
+        aggregate_id=contact.id,
+        topic=events.CONTACT_CREATED if created else events.CONTACT_UPDATED,
+        payload=_contact_payload(contact),
+    )
+
 
 # Redis keys for the event firehose buffer (RFC-002 §5.4 W3).
 EVENTS_BUFFER_PREFIX = "events:buffer:"
@@ -222,8 +249,14 @@ async def identify(
             set_=set_,
         )
 
-    contact = (await session.execute(stmt.returning(Contact))).scalar_one()
+    # ``xmax = 0`` on the returned row distinguishes an INSERT from an ON CONFLICT UPDATE, so the
+    # upsert emits the correct webhook topic (created vs updated).
+    upserted: Any = (
+        await session.execute(stmt.returning(Contact, sa.literal_column("(xmax = 0)")))
+    ).one()
+    contact, inserted = upserted[0], bool(upserted[1])
     await session.flush()
+    await _emit_contact(session, contact, created=inserted)
     return contact_out(contact)
 
 
@@ -363,6 +396,7 @@ async def create_contact(
         await session.flush()
     except sa.exc.IntegrityError as exc:
         raise ConflictError("a contact with this external_id or email already exists") from exc
+    await _emit_contact(session, contact, created=True)
     return contact_out(contact)
 
 
@@ -454,6 +488,7 @@ async def update_contact(
         await session.flush()
     except sa.exc.IntegrityError as exc:
         raise ConflictError("a contact with this external_id or email already exists") from exc
+    await _emit_contact(session, contact, created=False)
     return contact_out(contact)
 
 
