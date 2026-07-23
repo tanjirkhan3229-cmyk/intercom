@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import datetime as dt
 import uuid
+from dataclasses import dataclass
 from typing import Any
 
 import jwt
@@ -144,6 +145,9 @@ def _conversation_payload(c: Conversation) -> dict[str, Any]:
 def _part_payload(c: Conversation, p: ConversationPart) -> dict[str, Any]:
     payload = _conversation_payload(c)
     payload.update(
+        # ``channel`` lets channel-fanout consumers (P0.7 email) filter without re-reading the DB.
+        # Additive to a stable contract — existing consumers (realtime, webhooks) ignore it.
+        channel=c.channel,
         part_id=encode_public_id(IdPrefix.PART, p.id),
         part_type=p.part_type,
         author_kind=p.author_kind,
@@ -313,6 +317,150 @@ async def create_conversation(
         channel_meta=req.channel_meta,
     )
     return conversation_out(conv)
+
+
+# --- Channel adapters: system-initiated inbound (no admin Principal) ----------
+# The sanctioned cross-module entry points for channel modules (P0.7 email; import-linter allows
+# ``channels -> messaging.service``). Inbound channel messages have no acting admin, so these take
+# an explicit ``workspace_id`` (the adapter resolved the tenant + set the RLS GUC) instead of a
+# ``Principal``, and run the SAME W1 as agent/contact writes — channels never re-implement W1 or
+# touch messaging internals directly.
+
+
+async def open_email_conversation(
+    session: AsyncSession,
+    *,
+    workspace_id: uuid.UUID,
+    contact_id: uuid.UUID,
+    channel_account_id: uuid.UUID | None,
+    body: str | None,
+    attachments: list[dict[str, Any]] | None = None,
+    channel_meta: dict[str, Any] | None = None,
+) -> Conversation:
+    """Open an inbound *email* conversation with the contact's first message (a contact comment).
+
+    Reuses the shared :func:`_open_conversation` W1 core (channel='email'), then stamps the
+    resolving ``channel_account_id`` on the head so outbound replies know their sending account."""
+    conv = await _open_conversation(
+        session,
+        workspace_id=workspace_id,
+        contact_id=contact_id,
+        channel="email",
+        team_id=None,
+        body=body or "",
+        attachments=attachments,
+        channel_meta=channel_meta,
+    )
+    conv.channel_account_id = channel_account_id
+    await session.flush()
+    return conv
+
+
+async def append_contact_email(
+    session: AsyncSession,
+    *,
+    conversation_id: uuid.UUID,
+    body: str | None,
+    attachments: list[dict[str, Any]] | None = None,
+    channel_meta: dict[str, Any] | None = None,
+) -> ConversationPart:
+    """Append an inbound contact email to an existing conversation (W1).
+
+    A closed/snoozed thread is reopened **through the state machine** (appends a ``state_change``
+    part + emits ``conversation.state_changed``) so the reporting spine sees the reopen — channels
+    never hand-mutate ``conv.state``. RLS scopes the load to the caller's workspace; a foreign
+    ``conversation_id`` raises NotFound."""
+    conv = await _load_for_update(session, conversation_id)
+    if conv.state != "open":
+        prev = conv.state
+        conv.state = "open"
+        conv.snoozed_until = None
+        await _append_part(
+            session,
+            conv,
+            author_kind="system",
+            author_id=None,
+            part_type="state_change",
+            meta={"from": prev, "to": "open", "reason": "inbound_reply"},
+        )
+        await outbox.emit(
+            session,
+            aggregate=events.AGGREGATE_CONVERSATION,
+            aggregate_id=conv.id,
+            topic=events.CONVERSATION_STATE_CHANGED,
+            payload={**_conversation_payload(conv), "from": prev, "to": "open"},
+        )
+    return await _append_part(
+        session,
+        conv,
+        author_kind="contact",
+        author_id=conv.contact_id,
+        part_type="comment",
+        body=body,
+        attachments=attachments,
+        channel_meta=channel_meta,
+    )
+
+
+async def conversation_contact_id(
+    session: AsyncSession, conversation_id: uuid.UUID
+) -> uuid.UUID | None:
+    """Channel-facing (P0.7): the contact that owns a conversation, or ``None`` if it isn't in the
+    caller's workspace (RLS). Used by the email adapter to authenticate an inbound reply's sender
+    against the thread's contact before appending."""
+    contact_id: uuid.UUID | None = await session.scalar(
+        select(Conversation.contact_id).where(Conversation.id == conversation_id)
+    )
+    return contact_id
+
+
+@dataclass(frozen=True)
+class OutboundEmailPart:
+    """A part + its conversation head, flattened for a channel adapter to deliver (P0.7)."""
+
+    conversation_id: uuid.UUID
+    contact_id: uuid.UUID
+    channel: str
+    channel_account_id: uuid.UUID | None
+    part_id: uuid.UUID
+    author_kind: str
+    part_type: str
+    body: str | None
+    attachments: list[dict[str, Any]]
+
+
+async def get_outbound_part(
+    session: AsyncSession, conversation_id: uuid.UUID, part_id: uuid.UUID
+) -> OutboundEmailPart | None:
+    """Channel-facing (P0.7): fetch a part + its conversation head for outbound delivery.
+
+    Returns ``None`` when the part isn't in the caller's workspace (RLS). Filters on
+    ``(conversation_id, id)`` so the ``parts_thread`` index serves it. Lets the email adapter render
+    an agent reply without importing messaging internals (boundary rule)."""
+    row = (
+        await session.execute(
+            select(ConversationPart, Conversation)
+            .join(Conversation, Conversation.id == ConversationPart.conversation_id)
+            .where(
+                ConversationPart.conversation_id == conversation_id,
+                ConversationPart.id == part_id,
+            )
+        )
+    ).one_or_none()
+    if row is None:
+        return None
+    part, conv = row
+    return OutboundEmailPart(
+        conversation_id=conv.id,
+        contact_id=conv.contact_id,
+        channel=conv.channel,
+        channel_account_id=conv.channel_account_id,
+        part_id=part.id,
+        author_kind=part.author_kind,
+        part_type=part.part_type,
+        body=part.body,
+        attachments=list(part.attachments),
+    )
 
 
 _UNSET: Any = object()  # sentinel: "argument not supplied" (distinct from a real ``None`` ts)

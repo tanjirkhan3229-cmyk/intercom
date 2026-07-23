@@ -292,6 +292,55 @@ async def resolve_widget_contact(
     return contact_out(lead)
 
 
+async def resolve_contact_email(
+    session: AsyncSession, *, workspace_id: uuid.UUID, email: str, name: str | None = None
+) -> uuid.UUID:
+    """Find-or-create a ``user`` contact by email for a channel adapter (P0.7 email inbound).
+
+    The cross-module entry point for **system-initiated** work: no ``Principal``/RBAC (the caller
+    is trusted infrastructure, not an admin), and ``workspace_id`` is stamped **explicitly** — never
+    derived from the (untrusted) inbound email. The caller must already hold the RLS GUC. Upserts on
+    the ``contacts_email_user`` partial unique index so concurrent inbound emails from the same
+    address converge on exactly one contact. Returns the contact's uuid.
+    """
+    base = pg_insert(Contact).values(
+        workspace_id=workspace_id,
+        kind="user",
+        email=email,
+        name=name,
+        last_seen_at=func.now(),
+    )
+    stmt = base.on_conflict_do_update(
+        index_elements=[Contact.workspace_id, Contact.email],
+        index_where=sa.and_(
+            Contact.kind == "user",
+            Contact.email.isnot(None),
+            Contact.deleted_at.is_(None),
+        ),
+        set_={
+            # Keep an existing name; only fill it when we didn't already have one.
+            "name": func.coalesce(Contact.name, base.excluded.name),
+            "last_seen_at": func.now(),
+        },
+    ).returning(Contact.id)
+    contact_id = (await session.execute(stmt)).scalar_one()
+    await session.flush()
+    return uuid.UUID(str(contact_id))
+
+
+async def contact_email(
+    session: AsyncSession, contact_id: uuid.UUID
+) -> tuple[str | None, str | None]:
+    """Return ``(email, name)`` for a contact — the channel-facing lookup used by the email
+    adapter to address an outbound reply (RLS scopes the read to the caller's workspace)."""
+    row = (
+        await session.execute(select(Contact.email, Contact.name).where(Contact.id == contact_id))
+    ).one_or_none()
+    if row is None:
+        return (None, None)
+    return (row[0], row[1])
+
+
 # --- Contacts: CRUD -----------------------------------------------------------
 
 

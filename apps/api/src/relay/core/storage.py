@@ -67,3 +67,23 @@ def presign_get(key: str, *, ttl: int = _DOWNLOAD_TTL_SECONDS) -> str:
         ExpiresIn=ttl,
     )
     return str(url)
+
+
+# --- Server-side object I/O (WORKER-ONLY — never on the async request path) ---------------
+# boto3 is synchronous; these transfer bytes and must only be called from Celery tasks (e.g. the
+# email ingest task fetching SES-written raw MIME, or storing an inbound attachment). Keeping them
+# out of ``async def`` paths preserves the request loop's I/O budget (module docstring).
+
+
+def get_object(bucket: str, key: str) -> bytes:
+    """Fetch an object's bytes. Worker-only (sync boto3)."""
+    resp = _client().get_object(Bucket=bucket, Key=key)
+    body: bytes = resp["Body"].read()
+    return body
+
+
+def put_object(
+    bucket: str, key: str, body: bytes, *, content_type: str = "application/octet-stream"
+) -> None:
+    """Upload bytes to ``bucket/key``. Worker-only (sync boto3)."""
+    _client().put_object(Bucket=bucket, Key=key, Body=body, ContentType=content_type)

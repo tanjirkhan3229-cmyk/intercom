@@ -47,6 +47,13 @@ def _help_center_revalidate() -> int:
     return 0
 
 
+def _channels_dispatch() -> int:
+    from relay.modules.channels.dispatch import main as run_dispatch
+
+    run_dispatch()
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="relay")
     sub = parser.add_subparsers(dest="command", required=True)
@@ -55,6 +62,9 @@ def main(argv: list[str] | None = None) -> int:
     sub.add_parser("realtime-fanout", help="Run the realtime-fanout consumer (outbox → Centrifugo)")
     sub.add_parser(
         "help-center-revalidate", help="Run the Help Center ISR revalidation consumer (P0.8)"
+    )
+    sub.add_parser(
+        "channels-dispatch", help="Run the email outbound dispatcher (outbox → send.email)"
     )
 
     args = parser.parse_args(argv)
@@ -66,6 +76,8 @@ def main(argv: list[str] | None = None) -> int:
         return _realtime_fanout()
     if args.command == "help-center-revalidate":
         return _help_center_revalidate()
+    if args.command == "channels-dispatch":
+        return _channels_dispatch()
     parser.error(f"unknown command {args.command!r}")
     return 2
 

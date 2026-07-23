@@ -50,6 +50,7 @@ celery_app.conf.update(
         "relay.modules.crm.tasks",
         "relay.modules.messaging.tasks",
         "relay.modules.billing.tasks",
+        "relay.modules.channels.tasks",
     ],
 )
 
@@ -89,6 +90,12 @@ celery_app.conf.beat_schedule = {
     },
     "billing-sync-seats-to-stripe": {
         "task": "billing.sync_seats_to_stripe",
+        "schedule": 300.0,  # every 5 minutes
+        "options": {"queue": "housekeeping"},
+    },
+    # Verify pending sending domains (P0.7 email — DNS/SES check).
+    "channels-poll-domains": {
+        "task": "channels.poll_domains",
         "schedule": 300.0,  # every 5 minutes
         "options": {"queue": "housekeeping"},
     },
