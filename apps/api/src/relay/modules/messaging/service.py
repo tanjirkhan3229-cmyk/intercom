@@ -470,6 +470,128 @@ async def get_outbound_part(
     )
 
 
+# --- AI adapters: system-initiated Neko turns (no admin Principal, P1.2) ------
+# The sanctioned entry points for the ``ai`` module (import-linter allows ai -> messaging.service).
+# A Neko turn has no acting admin, so — like the channel adapters above — these take an explicit
+# ``conversation_id`` (the worker set the RLS GUC) and run the SAME W1 as agent/contact writes. The
+# ai module never re-implements W1 or touches messaging internals; messaging owns the ``ai_agent``
+# author kind and the ``ai_status`` field (RFC-002 §5.3), ai owns the orchestration (RFC-003).
+
+_VALID_AI_STATUS = frozenset({"active", "resolved", "handed_off"})
+
+
+@dataclass(frozen=True)
+class AiTurnPart:
+    author_kind: str
+    part_type: str
+    body: str | None
+    created_at: dt.datetime
+
+
+@dataclass(frozen=True)
+class AiTurnContext:
+    """A read-only snapshot of a conversation for a Neko turn (head + recent parts). Returned to the
+    ai module so it never imports messaging models to build a prompt / summary / sentiment."""
+
+    conversation_id: uuid.UUID
+    contact_id: uuid.UUID
+    channel: str
+    state: str
+    ai_status: str | None
+    recent: list[AiTurnPart]
+
+
+async def ai_turn_context(
+    session: AsyncSession, conversation_id: uuid.UUID, *, history_limit: int = 20
+) -> AiTurnContext | None:
+    """Head + recent parts (oldest→newest) for a turn, or ``None`` if the conversation isn't in the
+    caller's workspace (RLS). Reads the head only for the fields; parts for prompt context."""
+    conv = await session.get(Conversation, conversation_id)
+    if conv is None:
+        return None
+    rows = list(
+        (
+            await session.scalars(
+                select(ConversationPart)
+                .where(ConversationPart.conversation_id == conversation_id)
+                .order_by(ConversationPart.id.desc())
+                .limit(history_limit)
+            )
+        ).all()
+    )
+    recent = [AiTurnPart(p.author_kind, p.part_type, p.body, p.created_at) for p in reversed(rows)]
+    return AiTurnContext(
+        conversation_id=conv.id,
+        contact_id=conv.contact_id,
+        channel=conv.channel,
+        state=conv.state,
+        ai_status=conv.ai_status,
+        recent=recent,
+    )
+
+
+async def append_ai_reply(
+    session: AsyncSession,
+    *,
+    conversation_id: uuid.UUID,
+    body: str,
+    meta: dict[str, Any] | None = None,
+) -> ConversationPart:
+    """Neko's public answer — an ``ai_agent`` ``comment`` (W1). Clears ``waiting_since`` (Neko
+    answered), emits ``conversation.part.created`` for fan-out just like a human reply."""
+    conv = await _load_for_update(session, conversation_id)
+    return await _append_part(
+        session,
+        conv,
+        author_kind="ai_agent",
+        author_id=None,
+        part_type="comment",
+        body=body,
+        meta=meta or {},
+    )
+
+
+async def append_ai_note(
+    session: AsyncSession,
+    *,
+    conversation_id: uuid.UUID,
+    body: str,
+    meta: dict[str, Any] | None = None,
+) -> ConversationPart:
+    """A private ``ai_agent`` ``note`` (internal only) — the handoff recap so a human starts warm
+    (RFC-003 §5). Does not touch ``waiting_since`` (a note is not a reply)."""
+    conv = await _load_for_update(session, conversation_id)
+    return await _append_part(
+        session,
+        conv,
+        author_kind="ai_agent",
+        author_id=None,
+        part_type="note",
+        body=body,
+        meta=meta or {},
+    )
+
+
+async def set_ai_status(session: AsyncSession, *, conversation_id: uuid.UUID, status: str) -> None:
+    """Flip ``conversations.ai_status`` (null|active|resolved|handed_off) + emit an outbox event.
+    No-op if unchanged. RLS scopes the load to the workspace."""
+    if status not in _VALID_AI_STATUS:
+        raise ValidationError(f"invalid ai_status {status!r}")
+    conv = await _load_for_update(session, conversation_id)
+    prev = conv.ai_status
+    if prev == status:
+        return
+    conv.ai_status = status
+    await session.flush()
+    await outbox.emit(
+        session,
+        aggregate=events.AGGREGATE_CONVERSATION,
+        aggregate_id=conv.id,
+        topic=events.CONVERSATION_AI_STATUS_CHANGED,
+        payload={**_conversation_payload(conv), "ai_status": status, "prev_ai_status": prev},
+    )
+
+
 _UNSET: Any = object()  # sentinel: "argument not supplied" (distinct from a real ``None`` ts)
 
 

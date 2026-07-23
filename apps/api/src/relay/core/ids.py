@@ -121,3 +121,5 @@ class IdPrefix:
     WEBHOOK_SUBSCRIPTION = "whk"
     WEBHOOK_DELIVERY = "whd"
     WEBHOOK_EVENT = "evt"  # opaque public event id carried in the delivered payload
+    # ai module (P1.2 — Neko orchestrator)
+    AGENT_RUN = "run"  # one Neko turn in the agent_runs ledger (RFC-003 §3)

@@ -11,6 +11,9 @@
                                hosted site's on-demand revalidation webhook.
 - ``relay reporting-metrics`` — run the reporting-metrics consumer (P0.9): consumes the outbox
                                Redis stream and projects per-conversation metrics.
+- ``relay ai-dispatch``      — run the Neko turn dispatcher (P1.2): consumes the outbox Redis stream
+                               and enqueues ``ai.run_turn`` on the ai.interactive queue for each
+                               customer message.
 """
 
 from __future__ import annotations
@@ -77,6 +80,13 @@ def _webhook_dispatch() -> int:
     return 0
 
 
+def _ai_dispatch() -> int:
+    from relay.modules.ai.consumer import main as run_dispatch
+
+    run_dispatch()
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="relay")
     sub = parser.add_subparsers(dest="command", required=True)
@@ -99,6 +109,9 @@ def main(argv: list[str] | None = None) -> int:
     sub.add_parser(
         "webhook-dispatch", help="Run the webhook dispatch consumer (outbox → webhook deliveries)"
     )
+    sub.add_parser(
+        "ai-dispatch", help="Run the Neko turn dispatcher (outbox → ai.interactive queue)"
+    )
 
     args = parser.parse_args(argv)
     if args.command == "openapi":
@@ -117,6 +130,8 @@ def main(argv: list[str] | None = None) -> int:
         return _knowledge_indexing()
     if args.command == "webhook-dispatch":
         return _webhook_dispatch()
+    if args.command == "ai-dispatch":
+        return _ai_dispatch()
     parser.error(f"unknown command {args.command!r}")
     return 2
 

@@ -56,6 +56,7 @@ celery_app.conf.update(
         "relay.modules.reporting.tasks",
         "relay.modules.webhooks.tasks",
         "relay.modules.knowledge.tasks",
+        "relay.modules.ai.tasks",
     ],
 )
 

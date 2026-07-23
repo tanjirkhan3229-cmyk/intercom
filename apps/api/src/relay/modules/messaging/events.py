@@ -17,3 +17,6 @@ CONVERSATION_CREATED = "conversation.created"
 CONVERSATION_PART_CREATED = "conversation.part.created"
 CONVERSATION_STATE_CHANGED = "conversation.state_changed"
 CONVERSATION_ASSIGNED = "conversation.assigned"
+# Neko (ai) flipped conversations.ai_status (P1.2) — realtime fan-out shows the widget/agent that
+# the AI took over or handed off; analytics (P1.4) meters handoffs from it.
+CONVERSATION_AI_STATUS_CHANGED = "conversation.ai_status_changed"

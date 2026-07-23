@@ -1,6 +1,6 @@
 # Phase 2 — Omnichannel, Outbound Depth & Platform (months 7–12)
 
-Goal: parity on breadth — WhatsApp/Meta/SMS channels, tickets, Series, Copilot, Aide Actions, custom reports, app framework, enterprise base. Exit criteria: RFC-000 §5 Phase 2. Largest phase; the ∥ tracks are designed for parallel teams.
+Goal: parity on breadth — WhatsApp/Meta/SMS channels, tickets, Series, Copilot, Neko Actions, custom reports, app framework, enterprise base. Exit criteria: RFC-000 §5 Phase 2. Largest phase; the ∥ tracks are designed for parallel teams.
 
 ---
 
@@ -15,14 +15,14 @@ Goal: parity on breadth — WhatsApp/Meta/SMS channels, tickets, Series, Copilot
 >
 > **Acceptance:** live sandbox round-trip per channel; 24-h window rule enforced in composer with clear UX (blocked send offers template picker); token expiry surfaces status + notification, not silent failure; adapter conformance test suite passes for all four adapters (email included).
 
-### P2.2 — SMS + Aide on email & WhatsApp
+### P2.2 — SMS + Neko on email & WhatsApp
 **Depends on:** P2.1 · **Read first:** RFC-003 §2 (channel goals); RFC-001 §6.6
 
 > - SMS adapter (Twilio): number provisioning UI, inbound/outbound, opt-out keywords (STOP/START) auto-handled into consents, segment-length cost preview in composer.
-> - Aide channel expansion: email (async turn model — full-message replies, subject preservation, no streaming; signature/quote stripping on inbound before retrieval) and WhatsApp (session-window-aware: Aide replies only in-session; template fallback offers handoff). Channel-aware formatting layer in the generate step (chat: short + markdown; email: structured paragraphs + greeting/sign-off per persona).
+> - Neko channel expansion: email (async turn model — full-message replies, subject preservation, no streaming; signature/quote stripping on inbound before retrieval) and WhatsApp (session-window-aware: Neko replies only in-session; template fallback offers handoff). Channel-aware formatting layer in the generate step (chat: short + markdown; email: structured paragraphs + greeting/sign-off per persona).
 > - Eligibility/preflight updated per channel; metering unchanged (resolution definition is channel-agnostic).
 >
-> **Acceptance:** Aide resolves a staged email thread end-to-end with correct threading; WhatsApp out-of-window turn routes to handoff/template path; SMS opt-out instantly blocks sends (consent test); per-channel resolution analytics split correctly.
+> **Acceptance:** Neko resolves a staged email thread end-to-end with correct threading; WhatsApp out-of-window turn routes to handoff/template path; SMS opt-out instantly blocks sends (consent test); per-channel resolution analytics split correctly.
 
 ### P2.3 — Tickets ∥
 **Depends on:** P1 gate · **Read first:** RFC-000 §2.3; RFC-002 §5.2 (tickets 1:1 conversations), §5.6
@@ -72,7 +72,7 @@ Goal: parity on breadth — WhatsApp/Meta/SMS channels, tickets, Series, Copilot
 >
 > **Acceptance:** drafts cite sources visible on hover; acceptance-rate metric populates; Copilot failure (provider down) degrades to hidden UI, never blocks the composer; ledger rows distinguish copilot from autonomous turns for metering (copilot is never billed as resolution).
 
-### P2.7 — Aide Actions + custom answers
+### P2.7 — Neko Actions + custom answers
 **Depends on:** P1.2 · **Read first:** RFC-003 §5 (actions), §6; RFC-001 §10 (SSRF proxy)
 
 > - **Actions:** admin-defined HTTP tools (name, description-for-model, method/URL template, auth ref from Secrets vault, JSON schema for inputs/outputs, PII flags); execution only through the SSRF-guard proxy (deny RFC-1918, resolve-then-connect pinning, 10 s timeout), per-action rate limits + idempotency keys on mutating verbs; dry-run test console with sample inputs; responses schema-validated and injected as typed data (untrusted-input posture per RFC-003 §6). Tool-loop integration in the generate→act cycle with max-2-actions-per-turn budget.
@@ -84,7 +84,7 @@ Goal: parity on breadth — WhatsApp/Meta/SMS channels, tickets, Series, Copilot
 ### P2.8 — Custom reports & dashboards ∥
 **Depends on:** P0.9 · **Read first:** RFC-000 §2.9; RFC-002 §5.6 (reporting), §2 R9
 
-> - **Dataset registry:** curated, documented datasets (conversations, teammate activity, SLA events, CSAT, Aide runs, campaign stats) as versioned SQL views over rollup/metrics tables — the chart builder never touches raw partitioned tables (enforce by role grants).
+> - **Dataset registry:** curated, documented datasets (conversations, teammate activity, SLA events, CSAT, Neko runs, campaign stats) as versioned SQL views over rollup/metrics tables — the chart builder never touches raw partitioned tables (enforce by role grants).
 > - **Chart builder:** metric + group-by + filter AST (reuse predicate components) → validated query plan → chart (line/bar/table/number, Recharts); drill-down to underlying conversations where the dataset supports it; saved reports + dashboards with layout grid; scheduled email exports (CSV attach) via `housekeeping`.
 > - Query guardrails: per-workspace concurrency cap, statement timeout 15 s, result cap with pagination.
 >
@@ -105,11 +105,11 @@ Goal: parity on breadth — WhatsApp/Meta/SMS channels, tickets, Series, Copilot
 
 > - **SAML/OIDC SSO** (decide buy-vs-build per RFC-000 §8 — default WorkOS unless cost analysis says otherwise; abstract behind our session issuance either way), SCIM-lite user provisioning (create/deactivate), enforced-SSO workspace mode, 2FA (TOTP) for password accounts.
 > - **Granular permissions:** permission matrix (resources × actions) layered on the P0.1 role system; custom roles; per-team scoping (agent sees only their teams' inboxes); export/billing/settings gates. Single choke-point enforcement retained — extend the P0.1 helper, no scattered checks.
-> - **Audit log:** append-only per RFC-002 §5.6 for security-relevant events (auth, permission changes, exports, API key ops, Aide setting changes, app installs) + filterable UI + CSV export; retention per plan.
+> - **Audit log:** append-only per RFC-002 §5.6 for security-relevant events (auth, permission changes, exports, API key ops, Neko setting changes, app installs) + filterable UI + CSV export; retention per plan.
 >
 > **Acceptance:** SSO e2e against a real IdP sandbox (Okta dev); deactivation via SCIM kills sessions ≤ 60 s; permission matrix property tests (no action reachable without its permission — generate cases from the matrix); audit rows immutable (no UPDATE/DELETE grants — verified).
 
 ### P2.11 — Phase 2 gate
 **Depends on:** all above · **Read first:** RFC-000 §5 Phase 2 exit criteria
 
-> Run the gate: ≥5 channels GA with adapter conformance green; Aide ≥50% resolution on eligible traffic (2-week window, per-channel breakdown); Series 10× burst test signed off; app framework external-dev evidence; SSO/permissions pen-test pass (external tester); load re-test at phase-2 targets (60 msg/s, 200k connections staged); RFC diffs merged. Write `docs/gates/phase-2.md`.
+> Run the gate: ≥5 channels GA with adapter conformance green; Neko ≥50% resolution on eligible traffic (2-week window, per-channel breakdown); Series 10× burst test signed off; app framework external-dev evidence; SSO/permissions pen-test pass (external tester); load re-test at phase-2 targets (60 msg/s, 200k connections staged); RFC diffs merged. Write `docs/gates/phase-2.md`.

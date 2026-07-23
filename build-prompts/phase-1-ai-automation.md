@@ -1,6 +1,6 @@
 # Phase 1 — Sellable MVP: AI Agent + Automation (months 4–6)
 
-Goal: Aide (the AI agent) resolving real conversations with metered billing, a workflow engine, SLAs/views, and outbound v1. Exit criteria: RFC-000 §5 Phase 1 (incl. Aide ≥35% resolution on eligible design-partner traffic).
+Goal: Neko (the AI agent) resolving real conversations with metered billing, a workflow engine, SLAs/views, and outbound v1. Exit criteria: RFC-000 §5 Phase 1 (incl. Neko ≥35% resolution on eligible design-partner traffic).
 
 ---
 
@@ -16,7 +16,7 @@ Goal: Aide (the AI agent) resolving real conversations with metered billing, a w
 >
 > **Acceptance:** URL re-sync only re-embeds changed chunks (test with a diff); recall@10 ≥ 0.85 on the synthetic corpora; hybrid beats vector-only and FTS-only on the harness (documented numbers); cross-tenant retrieval impossible (RLS test with adversarial embeddings).
 
-### P1.2 — Aide orchestrator v1
+### P1.2 — Neko orchestrator v1
 **Depends on:** P1.1 · **Read first:** RFC-003 §3 (turn diagram), §5, §6, §9; RFC-001 §6.4 (`ai.interactive` queue), §9 (LLM rows)
 
 > Build the `ai` module's turn pipeline exactly to the RFC-003 §3 state machine, running on the `ai.interactive` queue:
@@ -26,27 +26,27 @@ Goal: Aide (the AI agent) resolving real conversations with metered billing, a w
 > - Handoff: honors "talk to a person" instantly; posts private summary note (recap, sources tried, sentiment); flips `conversations.ai_status`.
 > - `agent_runs` ledger per RFC-003 §3: chunks+scores, prompt hash, models, token counts, cost, latency breakdown, outcome — every turn, no exceptions.
 > - Prompt-injection posture per RFC-003 §6: retrieved/customer content typed as data, delimited; red-team suite (injection corpus, cross-tenant probes, exfiltration attempts) as a CI job with a pass-rate gate.
-> - Kill switches: per-workspace Aide flag, global model-route flag.
+> - Kill switches: per-workspace Neko flag, global model-route flag.
 >
 > **Acceptance:** first streamed token p95 < 3 s on staging with warm cache; provider blackhole test fails over mid-conversation without user-visible error; verifier rejects a planted ungrounded claim (fixture); red-team suite ≥ 98% pass; every turn reproducible from `agent_runs` (replay tool included).
 
-### P1.3 — Aide product surface + resolution metering
+### P1.3 — Neko product surface + resolution metering
 **Depends on:** P1.2, P0.10 · **Read first:** RFC-003 §8 (resolution definition — implement verbatim), §9 (spend caps); RFC-000 §8 (pricing)
 
-> Ship Aide's workspace-facing controls and the money loop:
+> Ship Neko's workspace-facing controls and the money loop:
 >
-> - Settings: enable per channel (chat only this phase), persona/tone (friendly/neutral/formal + custom guidance text), answer length, grounding-gate conservatism slider, handoff rules (always-handoff intents list, office-hours behavior), scope (which sources/collections Aide may use).
+> - Settings: enable per channel (chat only this phase), persona/tone (friendly/neutral/formal + custom guidance text), answer length, grounding-gate conservatism slider, handoff rules (always-handoff intents list, office-hours behavior), scope (which sources/collections Neko may use).
 > - **Preview sandbox:** test conversations against current knowledge with retrieval trace visible (chunks + scores) — admins must be able to see *why* an answer happened.
-> - Resolution metering per RFC-003 §8 verbatim: participation + no-human-after + (confirm OR 72 h silence) + no-reopen-within-72 h ⇒ `usage_records` row (same-txn with the qualifying state change); reopen claw-back as negative row; Stripe metered sync + monthly reconciliation job; per-workspace monthly spend cap → past cap, Aide routes to humans (never silent drop) and notifies admins.
+> - Resolution metering per RFC-003 §8 verbatim: participation + no-human-after + (confirm OR 72 h silence) + no-reopen-within-72 h ⇒ `usage_records` row (same-txn with the qualifying state change); reopen claw-back as negative row; Stripe metered sync + monthly reconciliation job; per-workspace monthly spend cap → past cap, Neko routes to humans (never silent drop) and notifies admins.
 >
 > **Acceptance:** metering fixture suite covers confirm/silence/reopen/claw-back paths to the exact definition; double webhook = no double meter; cap breach flips routing within one turn; sandbox trace matches `agent_runs`.
 
-### P1.4 — Aide analytics v0 ∥
+### P1.4 — Neko analytics v0 ∥
 **Depends on:** P1.3 · **Read first:** RFC-003 §8 (analytics), RFC-002 §5.6 (reporting spine)
 
-> Analytics pages fed from `agent_runs` + `conversation_metrics`: resolution rate & deflection over time, handoff reasons breakdown, CSAT delta (Aide-touched vs not), latency + cost per conversation, and a **run inspector** (searchable list → full turn trace: retrieval set, decisions, outputs). Rollup tables per the reporting spine — no raw `agent_runs` scans in dashboards.
+> Analytics pages fed from `agent_runs` + `conversation_metrics`: resolution rate & deflection over time, handoff reasons breakdown, CSAT delta (Neko-touched vs not), latency + cost per conversation, and a **run inspector** (searchable list → full turn trace: retrieval set, decisions, outputs). Rollup tables per the reporting spine — no raw `agent_runs` scans in dashboards.
 >
-> **Acceptance:** numbers reconcile with the metering fixtures from P1.3; run inspector loads any production turn < 1 s; a support engineer can answer "why did Aide say X" without engineering help (usability check).
+> **Acceptance:** numbers reconcile with the metering fixtures from P1.3; run inspector loads any production turn < 1 s; a support engineer can answer "why did Neko say X" without engineering help (usability check).
 
 ### P1.5 — Workflow engine
 **Depends on:** P0.3 · **Read first:** RFC-001 §6.7 (engine semantics); RFC-002 §5.6 (workflows, timers DDL)
@@ -55,7 +55,7 @@ Goal: Aide (the AI agent) resolving real conversations with metered billing, a w
 >
 > - Model: `workflows` / `workflow_versions` (graph JSONB: nodes typed trigger/condition/action/bot-step/wait; zod-style server validation), `workflow_runs`, `workflow_run_steps` with **UNIQUE (run_id, step_id)** — the exactly-once-effects ledger. Runs pin a version; editing never mutates in-flight runs.
 > - Triggers via outbox consumers: conversation.created, contact.message.created, attribute/event changed, admin action, schedule (beat), webhook-in. Trigger filters compiled from the same predicate AST as segments.
-> - Executor: advances a run step-by-step; each side effect (assign, tag, set attribute, snooze, apply SLA*, send reply/macro, call webhook, hand to Aide, route to team) executes through the ledger — a replayed task sees the ledger row and skips. Bot steps: ask-with-buttons, collect data (typed into attributes), disambiguate — rendered natively in the widget via part metadata. (*SLA action lands with P1.7; register the action type now behind a flag.)
+> - Executor: advances a run step-by-step; each side effect (assign, tag, set attribute, snooze, apply SLA*, send reply/macro, call webhook, hand to Neko, route to team) executes through the ledger — a replayed task sees the ledger row and skips. Bot steps: ask-with-buttons, collect data (typed into attributes), disambiguate — rendered natively in the widget via part metadata. (*SLA action lands with P1.7; register the action type now behind a flag.)
 > - Waits: durable `timers` rows claimed with `FOR UPDATE SKIP LOCKED` by beat per RFC-002 W6; survives broker wipe (chaos test).
 >
 > **Acceptance:** chaos suite — kill workers mid-run, duplicate trigger delivery, broker flush — yields zero duplicate side effects and all runs complete or park with resumable state; 1k concurrent runs on staging without lock contention (measure); execution log API returns full step history.
@@ -65,7 +65,7 @@ Goal: Aide (the AI agent) resolving real conversations with metered billing, a w
 
 > Visual builder in the agent app (React Flow): node palette (triggers/conditions/branches/bot steps/actions/wait), drag-connect with type-checked edges, inline node config panels reusing the attribute/segment predicate components, validation surfacing broken references before publish, version list with draft→publish flow and "runs on old versions" indicator, per-workflow run log view (step timeline, errors, re-run from failed step for idempotent steps).
 >
-> **Acceptance:** Playwright: build "new conversation outside office hours → collect email → hand to Aide → if unresolved route to Team X" entirely in UI, publish, execute e2e; invalid graph (orphan node, missing config) cannot publish; editing a live workflow leaves in-flight runs on the pinned version (verified).
+> **Acceptance:** Playwright: build "new conversation outside office hours → collect email → hand to Neko → if unresolved route to Team X" entirely in UI, publish, execute e2e; invalid graph (orphan node, missing config) cannot publish; editing a live workflow leaves in-flight runs on the pinned version (verified).
 
 ### P1.7 — Inbox v2: SLAs, views, balanced assignment, collision
 **Depends on:** P0.5 · **Read first:** RFC-000 §2.2, §5 Phase 1; RFC-002 §5.6 (sla tables), §2 R1/R4
@@ -110,6 +110,6 @@ Goal: Aide (the AI agent) resolving real conversations with metered billing, a w
 ### P1.11 — Phase 1 gate
 **Depends on:** all above · **Read first:** RFC-000 §5 Phase 1 exit criteria; RFC-003 §8
 
-> Run the gate: (1) Aide shadow-mode then live on ≥10 design partners; measure resolution per the RFC-003 §8 definition over ≥2 weeks — require ≥35% on eligible traffic, with the analytics dashboard as evidence; (2) workflow chaos suite green in CI for 2 consecutive weeks; (3) billing e2e on real Stripe test clock incl. metered resolutions; (4) load re-test message path at phase-1 target (30 msg/s) + campaign burst; (5) update all four RFCs where reality diverged (list the diffs in the gate PR).
+> Run the gate: (1) Neko shadow-mode then live on ≥10 design partners; measure resolution per the RFC-003 §8 definition over ≥2 weeks — require ≥35% on eligible traffic, with the analytics dashboard as evidence; (2) workflow chaos suite green in CI for 2 consecutive weeks; (3) billing e2e on real Stripe test clock incl. metered resolutions; (4) load re-test message path at phase-1 target (30 msg/s) + campaign burst; (5) update all four RFCs where reality diverged (list the diffs in the gate PR).
 >
 > **Acceptance:** a written gate report in `docs/gates/phase-1.md` with metrics, incidents, and go/no-go.

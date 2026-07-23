@@ -162,7 +162,7 @@ sequenceDiagram
   R->>GW: fan-out
   GW-->>AG: render message — p95 < 1s end-to-end
   Note over API,Q: outbox relay drains async
-  Q->>Q: workflow eval · Aide trigger · webhooks · counters
+  Q->>Q: workflow eval · Neko trigger · webhooks · counters
 ```
 
 Unhappy paths: idempotency key dedupes client retries (RFC-002 §7); if Redis publish fails post-commit, the outbox relay re-publishes (at-least-once, subscribers dedupe by part id); if the gateway is down, widget + agent app fall back to 10 s polling against `app` (feature-flagged kill switch) — degraded, not dead.
@@ -172,7 +172,7 @@ Unhappy paths: idempotency key dedupes client retries (RFC-002 §7); if Redis pu
 | Queue | Work | Why isolated |
 |---|---|---|
 | `interactive` | workflow eval, assignment, counters | Low-latency budget; small fast tasks only |
-| `ai.interactive` | Aide turns, copilot | Slow (seconds), rate-limited; concurrency-capped per provider **and per workspace** |
+| `ai.interactive` | Neko turns, copilot | Slow (seconds), rate-limited; concurrency-capped per provider **and per workspace** |
 | `ingest` | inbound email parse, channel webhooks normalize | Burst-absorbing; poison-message-prone (malformed MIME) |
 | `send.email` / `send.channels` | campaign + reply delivery | Provider rate-limited; huge bursts on campaign fire |
 | `webhooks` | outbound webhook delivery + retries | Slow consumers must not clog anything else |
@@ -224,7 +224,7 @@ Timeouts on every network call; retries = bounded + jittered + idempotent-only; 
 
 | Component | Failure | Blast radius | Mitigation / degradation |
 |---|---|---|---|
-| LLM provider | Slow / down / 429 storm | Aide stalls | Per-provider breaker → secondary provider → graceful "routing you to the team" + auto-assign to humans; copilot hides; **humans unaffected** |
+| LLM provider | Slow / down / 429 storm | Neko stalls | Per-provider breaker → secondary provider → graceful "routing you to the team" + auto-assign to humans; copilot hides; **humans unaffected** |
 | Redis (pub/sub) | Down | No realtime push | Clients auto-fallback to polling (flagged); messages persist fine; outbox re-publishes on recovery |
 | Redis (broker) | Down / data loss | Async work halts | API keeps accepting (outbox buffers); relay replays into fresh broker; idempotency absorbs duplicates |
 | Postgres writer | Failover (≈30 s Aurora) | Writes fail briefly | Client retry w/ backoff + idempotency keys; RDS Proxy pins/reconnects; degraded read-only banner in agent app |
@@ -271,7 +271,7 @@ Production-readiness posture: golden signals on every unit; structured logs with
 
 - **Pipeline (GitHub Actions):** PR → lint/typecheck (ruff, mypy, tsc) → unit tests → build **one immutable image** → integration tests against ephemeral Postgres/Redis (testcontainers) → security scan → push. Merge to main → auto-deploy staging (mirrors prod shape, synthetic load) → smoke suite → **canary to prod**: 5% of `app` tasks + 1 gateway node, 15 min golden-signal watch with deploy markers → full rolling. Auto-rollback = repoint to previous image (build-once makes this seconds).
 - **Migrations:** Alembic, expand/contract only, `lock_timeout` + retry wrapper, `CREATE INDEX CONCURRENTLY`, batched backfills as `housekeeping` tasks — migration step runs before code deploy and must be compatible with **both** running versions (full discipline in RFC-002 §9).
-- **Feature flags** (Unleash, self-hosted): every risky subsystem ships dark with a kill switch — realtime fallback-to-polling, Aide per-workspace enable, new channel adapters, series engine. Flags decouple deploy from release across the whole phased roadmap.
+- **Feature flags** (Unleash, self-hosted): every risky subsystem ships dark with a kill switch — realtime fallback-to-polling, Neko per-workspace enable, new channel adapters, series engine. Flags decouple deploy from release across the whole phased roadmap.
 - **Environments:** dev (docker-compose, one command) → PR previews (Vercel for web; ephemeral API optional) → staging → prod. IaC: Terraform, applied via pipeline with plan review.
 - **Phased delivery:** maps 1:1 to RFC-000 §5; each phase's exit gate includes its load test, chaos drill (kill Redis, kill a gateway node, LLM blackhole), and restore rehearsal.
 

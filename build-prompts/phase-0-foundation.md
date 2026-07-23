@@ -108,7 +108,7 @@ Run in order. ∥ marks prompts that can run in parallel worktrees once their de
 ### P0.10 — Billing v1 ∥
 **Depends on:** P0.1 · **Read first:** RFC-002 §5.6 (billing tables); RFC-000 §8 (pricing open question — implement seats now, meters-ready)
 
-> Build `billing`: Stripe Checkout + customer portal integration; `plans`, `subscriptions`, seat counting (active memberships) synced to Stripe subscription quantity daily + on change; `usage_records` table per RFC-002 W8 (append-only, negative-row corrections) with a generic meter interface — Aide resolutions plug in during P1.3. Trial logic (14 days), plan gates as a `Entitlements` service consulted by feature flags, dunning webhooks → workspace banner state.
+> Build `billing`: Stripe Checkout + customer portal integration; `plans`, `subscriptions`, seat counting (active memberships) synced to Stripe subscription quantity daily + on change; `usage_records` table per RFC-002 W8 (append-only, negative-row corrections) with a generic meter interface — Neko resolutions plug in during P1.3. Trial logic (14 days), plan gates as a `Entitlements` service consulted by feature flags, dunning webhooks → workspace banner state.
 >
 > **Acceptance:** Stripe test-clock run: trial → subscribe → seat add → payment fail → recovery, all states reflected in-app; usage_records survive a duplicate webhook (idempotent by event id); no Stripe call inside a request-path transaction (async via outbox).
 
