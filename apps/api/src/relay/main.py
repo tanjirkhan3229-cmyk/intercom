@@ -25,6 +25,7 @@ from relay.modules.identity.router import router as identity_router
 from relay.modules.knowledge.router import router as knowledge_router
 from relay.modules.messaging.router import router as messaging_router
 from relay.modules.platform.router import router as platform_router
+from relay.modules.reporting.router import router as reporting_router
 
 log = get_logger(__name__)
 
@@ -73,6 +74,7 @@ def create_app() -> FastAPI:
     app.include_router(billing_router, prefix="/v0")
     app.include_router(knowledge_router, prefix="/v0")
     app.include_router(platform_router, prefix="/v0")
+    app.include_router(reporting_router, prefix="/v0")
 
     return app
 
