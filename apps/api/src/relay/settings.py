@@ -47,6 +47,40 @@ class Settings(BaseSettings):
     smtp_host: str = "localhost"
     smtp_port: int = 1025
 
+    # --- Email channel (P0.7, RFC-001 §6.6/§9) ---
+    # Outbound transport is chosen by ``email_transport``: ``smtp`` (dev → Mailpit), ``ses``
+    # (staging/prod), or ``memory`` (tests capture via the FakeSender, no network). SES uses the
+    # same MinIO/S3 boto credentials pattern (storage._client); ``ses_endpoint_url`` allows a
+    # local/staging override. Inbound arrives as SES-receipt → S3 raw MIME → SNS → the /inbound
+    # webhook → the ``ingest`` queue.
+    email_transport: Literal["smtp", "ses", "memory"] = "smtp"
+    ses_region: str = "us-east-1"
+    ses_endpoint_url: str | None = None
+    ses_access_key_id: str | None = None  # None → boto default chain (IAM role)
+    ses_secret_access_key: str | None = None
+    ses_configuration_set: str | None = None  # bounce/complaint event publishing
+    # The workspace-agnostic inbound domain that carries plus-addressed reply tokens
+    # (``reply+{token}@{email_inbound_domain}``). Per-workspace sending domains live in the
+    # ``verified_domains`` table.
+    email_inbound_domain: str = "inbound.relay.dev"
+    email_from_name: str = "Relay"
+    # Dedicated HMAC key for stateless reply tokens — deliberately separate from
+    # ``jwt_signing_key`` so the two token audiences never cross (mirrors centrifugo_token_secret).
+    email_reply_token_secret: str = Field(
+        default="dev-email-reply-token-secret-change-me", min_length=16
+    )
+    # Max raw MIME size we will accept/emit (SES receive/send limits are ~40 MB). Outbound over
+    # this is rejected at the service layer; inbound over this drops the attachment + notes it.
+    email_max_message_bytes: int = 40 * 1024 * 1024
+    # Global outbound send-rate cap (token bucket, RFC-001 §9 bounce-storm guard). None = no cap
+    # (dev/tests). Per-tenant caps graduate with campaigns (P1.8). Prod sets this to the SES rate.
+    email_send_rate_per_sec: int | None = None
+    # Bucket holding SES-written raw inbound MIME (SES receipt rule action target).
+    s3_bucket_email_inbound: str = "relay-email-inbound"
+    # SNS webhook signature verification. Disable ONLY in tests (the verifier is exercised by its
+    # own unit test with a captured payload); staging/prod keep it on.
+    sns_verify_signatures: bool = True
+
     # --- Security (RFC-001 §10) ---
     jwt_signing_key: str = Field(default="dev-only-change-me-please-32-bytes-min", min_length=16)
     secret_encryption_key: str = Field(

@@ -238,6 +238,19 @@ services:
       centrifugo:
         condition: service_started
 
+  channels-dispatch:
+    # Consumes `relay:outbox` and enqueues outbound email sends on the `send.email` queue (P0.7).
+    build:
+      context: ..
+      dockerfile: apps/api/Dockerfile
+    environment: *api-env
+    command: ["relay", "channels-dispatch"]
+    depends_on:
+      redis-cache:
+        condition: service_healthy
+      redis-broker:
+        condition: service_healthy
+
   reporting-metrics:
     # Consumes `relay:outbox` and projects per-conversation metrics into `conversation_metrics`
     # (P0.9, RFC-000 §2.9). Independent consumer group; single-instance for ordered idempotent folds.

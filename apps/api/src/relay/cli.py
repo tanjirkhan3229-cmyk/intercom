@@ -49,6 +49,13 @@ def _help_center_revalidate() -> int:
     return 0
 
 
+def _channels_dispatch() -> int:
+    from relay.modules.channels.dispatch import main as run_dispatch
+
+    run_dispatch()
+    return 0
+
+
 def _reporting_metrics() -> int:
     from relay.modules.reporting.consumer import main as run_metrics
 
@@ -66,6 +73,9 @@ def main(argv: list[str] | None = None) -> int:
         "help-center-revalidate", help="Run the Help Center ISR revalidation consumer (P0.8)"
     )
     sub.add_parser(
+        "channels-dispatch", help="Run the email outbound dispatcher (outbox → send.email)"
+    )
+    sub.add_parser(
         "reporting-metrics", help="Run the reporting-metrics consumer (outbox → metrics)"
     )
 
@@ -78,6 +88,8 @@ def main(argv: list[str] | None = None) -> int:
         return _realtime_fanout()
     if args.command == "help-center-revalidate":
         return _help_center_revalidate()
+    if args.command == "channels-dispatch":
+        return _channels_dispatch()
     if args.command == "reporting-metrics":
         return _reporting_metrics()
     parser.error(f"unknown command {args.command!r}")

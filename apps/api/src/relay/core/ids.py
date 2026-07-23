@@ -111,3 +111,8 @@ class IdPrefix:
     COLLECTION = "col"
     PLAN = "pln"
     SUBSCRIPTION = "sub"
+    # channels module (P0.7 — email)
+    DOMAIN = "dom"
+    CHANNEL_ACCOUNT = "cha"
+    SUPPRESSION = "sup"
+    EMAIL_MESSAGE = "eml"
