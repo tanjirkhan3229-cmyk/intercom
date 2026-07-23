@@ -6,6 +6,10 @@ Alembic's env imports ``target_metadata`` from here. Add new model modules as th
 
 from __future__ import annotations
 
+# Core infrastructure tables (not owned by a feature module): the outbox spine + idempotency
+# ledger. Imported for mapper registration so their tables live on Base.metadata too.
+from relay.core import idempotency as _idempotency  # noqa: F401
+from relay.core import outbox as _outbox  # noqa: F401
 from relay.core.base_model import Base
 
 # Import for side effects (mapper registration). Keep alphabetized.

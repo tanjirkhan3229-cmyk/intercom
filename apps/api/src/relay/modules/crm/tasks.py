@@ -20,7 +20,7 @@ from __future__ import annotations
 
 import json
 import uuid
-from typing import Any
+from typing import Any, cast
 
 import psycopg
 
@@ -122,7 +122,9 @@ def drain_events() -> int:
     """Drain every workspace's event buffer into ``events``. Returns rows landed."""
     redis = get_redis_sync()
     total = 0
-    for workspace_id in list(redis.smembers(EVENTS_BUFFER_WORKSPACES)):
+    # list() snapshots the set before _drain_workspace srem-mutates it; cast resolves the
+    # sync/async union in redis-py's shared type for smembers.
+    for workspace_id in list(cast("set[str]", redis.smembers(EVENTS_BUFFER_WORKSPACES))):
         total += _drain_workspace(redis, str(workspace_id))
     return total
 

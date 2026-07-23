@@ -20,6 +20,7 @@ from relay.core.middleware import RequestContextMiddleware
 from relay.modules.crm.router import router as crm_router
 from relay.modules.identity.middleware import TenancyMiddleware
 from relay.modules.identity.router import router as identity_router
+from relay.modules.messaging.router import router as messaging_router
 
 log = get_logger(__name__)
 
@@ -52,6 +53,7 @@ def create_app() -> FastAPI:
     # Feature modules (versioned public API).
     app.include_router(identity_router, prefix="/v0")
     app.include_router(crm_router, prefix="/v0")
+    app.include_router(messaging_router, prefix="/v0")
 
     return app
 

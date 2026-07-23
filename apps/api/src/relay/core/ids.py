@@ -106,4 +106,5 @@ class IdPrefix:
     ATTRIBUTE = "attr"
     CONVERSATION = "cnv"
     PART = "msg"
+    SAVED_REPLY = "rep"
     ARTICLE = "art"
