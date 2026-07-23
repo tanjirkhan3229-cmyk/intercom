@@ -17,6 +17,7 @@ from relay import __version__, health
 from relay.core.errors import register_exception_handlers
 from relay.core.logging import configure_logging, get_logger
 from relay.core.middleware import RequestContextMiddleware
+from relay.modules.billing.router import router as billing_router
 from relay.modules.crm.router import router as crm_router
 from relay.modules.identity.middleware import TenancyMiddleware
 from relay.modules.identity.router import router as identity_router
@@ -54,6 +55,7 @@ def create_app() -> FastAPI:
     app.include_router(identity_router, prefix="/v0")
     app.include_router(crm_router, prefix="/v0")
     app.include_router(messaging_router, prefix="/v0")
+    app.include_router(billing_router, prefix="/v0")
 
     return app
 
