@@ -271,3 +271,33 @@ export interface HelpCenterInput {
   primary_color?: string | null;
   default_locale?: string;
 }
+
+// --- Knowledge Hub sources (P1.1) ---------------------------------------------
+
+export type SourceKind = "url" | "pdf" | "snippet";
+/** Per-source AI-readiness surfaced in the UI. */
+export type SourceStatus = "pending" | "syncing" | "synced" | "error";
+
+export interface Source {
+  id: string;
+  kind: SourceKind;
+  title: string;
+  status: SourceStatus;
+  config: Record<string, unknown>;
+  locale: string;
+  audience: Record<string, unknown>;
+  document_count: number;
+  chunk_count: number;
+  last_synced_at: string | null;
+  last_error: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface SourceInput {
+  kind: SourceKind;
+  title: string;
+  config?: Record<string, unknown>;
+  locale?: string;
+  audience?: Record<string, unknown>;
+}

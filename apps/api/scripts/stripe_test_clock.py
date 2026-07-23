@@ -176,9 +176,7 @@ def run() -> None:
         sub = stripe.get(f"subscriptions/{sub_id}")
         _expect("recovery", sub["status"], "active")
 
-        print(
-            f"\nAll lifecycle transitions verified ✓  (clock={clock_id}, subscription={sub_id})"
-        )
+        print(f"\nAll lifecycle transitions verified ✓  (clock={clock_id}, subscription={sub_id})")
         print("Tip: with `stripe listen --forward-to localhost:8000/v0/billing/webhook` running,")
         print("     the app's /v0/billing/subscription reflects each of these states in parallel.")
     finally:

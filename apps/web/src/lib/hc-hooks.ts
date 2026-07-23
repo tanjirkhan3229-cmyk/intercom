@@ -10,7 +10,14 @@ import { useInfiniteQuery, useMutation, useQuery, useQueryClient } from "@tansta
 import type { Page } from "@relay/shared";
 import { useApi, useAuth } from "./auth";
 import { qk } from "./keys";
-import type { ArticleInput, ArticleSummary, CollectionInput, HelpCenterInput } from "./types";
+import type {
+  ArticleInput,
+  ArticleSummary,
+  CollectionInput,
+  HelpCenterInput,
+  Source,
+  SourceInput,
+} from "./types";
 
 const nextCursor = (last: Page<unknown>) => last.next_cursor ?? undefined;
 
@@ -135,4 +142,38 @@ export function useUpdateHelpCenter() {
     mutationFn: (input: HelpCenterInput) => api.updateHelpCenter(input),
     onSuccess: (cfg) => qc.setQueryData(qk.helpCenter, cfg),
   });
+}
+
+// --- Knowledge Hub sources (P1.1) ---------------------------------------------
+
+/** Sources list; auto-polls while any source is still ingesting so the status badge stays live. */
+export function useSources() {
+  const api = useApi();
+  const { status } = useAuth();
+  return useQuery({
+    queryKey: qk.sources,
+    queryFn: () => api.listSources(),
+    enabled: status === "authenticated",
+    refetchInterval: (query) => {
+      const data = query.state.data as Source[] | undefined;
+      const busy = data?.some((s) => s.status === "syncing" || s.status === "pending");
+      return busy ? 3000 : false;
+    },
+  });
+}
+
+export function useSourceMutations() {
+  const api = useApi();
+  const qc = useQueryClient();
+  const invalidate = () => void qc.invalidateQueries({ queryKey: qk.sources });
+  const create = useMutation({
+    mutationFn: (input: SourceInput) => api.createSource(input),
+    onSettled: invalidate,
+  });
+  const sync = useMutation({ mutationFn: (id: string) => api.syncSource(id), onSettled: invalidate });
+  const remove = useMutation({
+    mutationFn: (id: string) => api.deleteSource(id),
+    onSettled: invalidate,
+  });
+  return { create, sync, remove };
 }

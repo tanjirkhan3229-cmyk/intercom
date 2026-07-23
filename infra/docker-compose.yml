@@ -288,6 +288,25 @@ services:
       redis-broker:
         condition: service_healthy
 
+  knowledge-indexing:
+    # Consumes `relay:outbox` and enqueues re-index tasks on the `ai.batch` queue when a published
+    # article changes (P1.1). Never embeds inline — the provider-bound work runs on the worker
+    # fleet so a slow embedding provider can't wedge the stream. Single-instance stream drainer.
+    build:
+      context: ..
+      dockerfile: apps/api/Dockerfile
+    environment: *api-env
+    command: ["relay", "knowledge-indexing"]
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+      postgres:
+        condition: service_healthy
+      redis-cache:
+        condition: service_healthy
+      redis-broker:
+        condition: service_healthy
+
 volumes:
   pgdata:
   brokerdata:

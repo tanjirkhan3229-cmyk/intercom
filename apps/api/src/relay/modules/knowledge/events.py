@@ -37,3 +37,11 @@ AGGREGATE_HELP_CENTER = "help_center"
 REVALIDATION_TOPICS: frozenset[str] = frozenset(
     {ARTICLE_PUBLISHED, ARTICLE_UNPUBLISHED, ARTICLE_UPDATED, ARTICLE_DELETED}
 )
+
+# Article-lifecycle topics that keep the retrieval index (``content_chunks``) fresh (P1.1,
+# RFC-003 §4 "article publish -> re-chunk within minutes"). Consumed by
+# ``relay.modules.knowledge.indexing_consumer``, which enqueues the (re-)index / de-index task.
+# Same trigger set as revalidation, a different (independent) consumer group.
+INDEXING_TOPICS: frozenset[str] = frozenset(
+    {ARTICLE_PUBLISHED, ARTICLE_UNPUBLISHED, ARTICLE_UPDATED, ARTICLE_DELETED}
+)

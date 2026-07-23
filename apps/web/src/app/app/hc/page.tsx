@@ -12,6 +12,7 @@ import { LoadingState, EmptyState, ErrorState } from "@/components/inbox/states"
 import { cn } from "@/lib/utils";
 import { CollectionsPanel } from "@/components/hc/collections-panel";
 import { HelpCenterSettings } from "@/components/hc/help-center-settings";
+import { SourcesPanel } from "@/components/hc/sources-panel";
 import type { ArticleStatus, ArticleSummary } from "@/lib/types";
 
 type Filter = "all" | "draft" | "published";
@@ -60,6 +61,9 @@ export default function HelpCenterPage() {
         <aside className="w-72 shrink-0 overflow-y-auto border-r border-border p-4">
           <div className="flex flex-col gap-6">
             <CollectionsPanel />
+            <div className="border-t border-border pt-6">
+              <SourcesPanel />
+            </div>
             <div className="border-t border-border pt-6">
               <HelpCenterSettings />
             </div>

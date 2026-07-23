@@ -10,7 +10,7 @@ Two audiences:
 from __future__ import annotations
 
 import datetime as dt
-from typing import Any
+from typing import Any, Literal
 
 from pydantic import BaseModel, Field
 
@@ -187,3 +187,68 @@ class PublicSearchResult(BaseModel):
 class PublicSearchResponse(BaseModel):
     query: str
     results: list[PublicSearchResult]
+
+
+# --- Knowledge Hub: external sources (admin, P1.1) ----------------------------
+
+
+class SourceCreate(BaseModel):
+    kind: Literal["url", "pdf", "snippet"]
+    title: str = Field(min_length=1, max_length=500)
+    config: dict[str, Any] = Field(default_factory=dict)
+    locale: str = Field(default="en", pattern=_LOCALE_PATTERN)
+    audience: dict[str, Any] = Field(default_factory=dict)
+
+
+class SourceUpdate(BaseModel):
+    title: str | None = Field(default=None, min_length=1, max_length=500)
+    config: dict[str, Any] | None = None
+    locale: str | None = Field(default=None, pattern=_LOCALE_PATTERN)
+    audience: dict[str, Any] | None = None
+
+
+class SourceOut(BaseModel):
+    id: str
+    kind: str
+    title: str
+    status: str  # pending | syncing | synced | error (the per-source AI-readiness)
+    config: dict[str, Any]
+    locale: str
+    audience: dict[str, Any]
+    document_count: int
+    chunk_count: int
+    last_synced_at: dt.datetime | None
+    last_error: str | None
+    created_at: dt.datetime
+    updated_at: dt.datetime
+
+
+# --- Knowledge Hub: retrieval (admin/agent-facing debug + the internal contract, P1.1) --------
+
+
+class RetrievalRequest(BaseModel):
+    query: str = Field(min_length=1, max_length=2000)
+    k: int = Field(default=8, ge=1, le=50)
+    locale: str = Field(default="en", pattern=_LOCALE_PATTERN)
+    method: Literal["hybrid", "vector", "fts"] = "hybrid"
+    source_kinds: list[str] | None = None
+    ef_search: int | None = Field(default=None, ge=1, le=1000)
+
+
+class RetrievedChunkOut(BaseModel):
+    source_id: str
+    source_kind: str
+    title: str | None
+    heading_path: str | None
+    content: str
+    score: float
+
+
+class RetrievalResponse(BaseModel):
+    query: str
+    method: str
+    results: list[RetrievedChunkOut]
+
+
+class ReembedRequest(BaseModel):
+    new_version: int = Field(ge=1, le=32767)

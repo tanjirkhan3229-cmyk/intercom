@@ -23,6 +23,7 @@ dependencies = [
     "orjson>=3.10",
     "tenacity>=9.0",                 # bounded + jittered retries
     "boto3>=1.35",                   # S3/MinIO
+    "pypdf>=5.1",                    # PDF text extraction (P1.1 knowledge sources)
 ]
 
 [project.scripts]

@@ -140,6 +140,34 @@ class Settings(BaseSettings):
         default="dev-help-center-revalidate-secret", min_length=8
     )
 
+    # --- Knowledge Hub / retrieval (P1.1, RFC-002 §5.5 + Appendix B, RFC-003 §4) ---
+    # Provider abstraction: ``deterministic`` is the hermetic dev/test/CI embedder (no network,
+    # reproducible — the eval harness + re-sync diffing depend on that); ``openai`` is the prod
+    # OpenAI-compatible HTTP embeddings endpoint (batched, timed out, circuit-broken).
+    embedding_provider: Literal["deterministic", "openai"] = "deterministic"
+    # Model tag stored on nothing directly but folded into ``emb_version`` semantics — a model
+    # change is a version bump + re-embed cutover, never an in-place edit (RFC-003 §4).
+    embedding_model: str = "relay-hash-v1"
+    embedding_dimension: int = 1536  # RFC-002 §5.5 halfvec(1536) — must match the column width.
+    # The current target version for (re-)embeds. A workspace retrieves at its own active version
+    # (knowledge_settings.emb_version); a re-embed writes this version then flips that pointer.
+    embedding_version: int = 1
+    embedding_api_base: str | None = None  # e.g. https://api.openai.com/v1
+    embedding_api_key: str | None = None
+    embedding_batch_size: int = 96  # texts per provider call (batch embed, RFC-003 §4)
+    embedding_timeout_seconds: float = 30.0
+
+    # Retrieval defaults (Appendix B). ``oversample`` is the per-arm LIMIT before RRF fusion;
+    # ``ef_search`` is the HNSW recall knob, tunable per ``retrieve()`` call.
+    retrieval_default_k: int = 8
+    retrieval_oversample: int = 40
+    retrieval_default_ef_search: int = 100
+
+    # External-source sync guards (URL crawler / PDF). Bounded + timed out (RFC-001 §9).
+    source_crawl_max_pages: int = 50
+    source_fetch_timeout_seconds: float = 15.0
+    source_max_document_bytes: int = 10 * 1024 * 1024
+
     # --- Public API (P0.11, RFC-001 §10) ---
     # Per-workspace token bucket applied ONLY to API-key traffic (the first-party agent app uses
     # JWTs and is never rate-limited here). ``capacity`` = burst; ``refill`` = tokens/sec. Tests
