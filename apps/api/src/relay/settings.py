@@ -63,6 +63,18 @@ class Settings(BaseSettings):
     google_oidc_client_secret: str | None = None
     google_oidc_redirect_uri: str | None = None
 
+    # --- Billing / Stripe (RFC-002 §5.6, P0.10) ---
+    stripe_api_base: str = "https://api.stripe.com"
+    # Pin the Stripe API version so provider-side upgrades never silently change payload
+    # shapes under us (RFC-001 §5 provider discipline). Bump deliberately, with a test run.
+    stripe_api_version: str = "2024-06-20"
+    stripe_secret_key: str = "sk_test_dev_placeholder"
+    stripe_webhook_secret: str = "whsec_dev_placeholder"
+    stripe_checkout_success_url: str = "http://localhost:3000/billing/success"
+    stripe_checkout_cancel_url: str = "http://localhost:3000/billing/cancel"
+    stripe_portal_return_url: str = "http://localhost:3000/settings/billing"
+    billing_trial_days: int = 14
+
     # --- Realtime gateway (Centrifugo — RFC-001 §6.1 gateway row, §6.3) ---
     # Realtime is bought, not built: the API mints per-connection + per-channel HS256 tokens and
     # publishes fan-out via Centrifugo's server API. ``token_secret`` must match Centrifugo's
