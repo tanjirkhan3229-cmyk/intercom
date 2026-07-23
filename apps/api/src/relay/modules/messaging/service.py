@@ -27,14 +27,20 @@ from sqlalchemy import select, update
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from relay.core import outbox
-from relay.core.errors import ConflictError, NotFoundError, ValidationError
+from relay.core import outbox, realtime
+from relay.core.errors import (
+    ConflictError,
+    NotFoundError,
+    PermissionDeniedError,
+    ValidationError,
+)
 from relay.core.ids import IdPrefix, decode_public_id, encode_public_id, uuid7
 from relay.core.pagination import Page, clamp_limit
 from relay.core.principal import Principal
 from relay.core.rbac import Role, authorize
 from relay.core.redis import get_redis
 from relay.modules.identity import service as identity_service
+from relay.settings import get_settings
 
 from . import events, schemas
 from .models import Conversation, ConversationPart, ConversationTag, SavedReply
@@ -358,6 +364,32 @@ async def list_parts(
     return Page(items=[part_out(p) for p in parts], next_cursor=next_cursor)
 
 
+async def list_parts_after(
+    session: AsyncSession, public_id: str, *, after: str | None = None, limit: int | None = None
+) -> Page[schemas.PartOut]:
+    """Ascending parts newer than ``after`` — the realtime long-poll fallback (RFC-001 §6.3).
+
+    When the websocket is down, clients poll this with the id of the newest part they hold; the
+    outbox/DB is the source of truth, so a gateway outage never loses a message (parts are read
+    straight from Postgres). UUIDv7 part ids are time-ordered, so the ``id > after`` keyset is
+    chronological. Gated by the ``realtime_fallback`` kill switch."""
+    if not get_settings().realtime_fallback:
+        raise PermissionDeniedError("realtime fallback polling is disabled")
+    cid = _decode_or_404(IdPrefix.CONVERSATION, public_id, "conversation")
+    await _get(session, cid)  # 404 (RLS-scoped) if the conversation isn't this workspace's
+    n = clamp_limit(limit)
+    stmt = select(ConversationPart).where(ConversationPart.conversation_id == cid)
+    if after:
+        stmt = stmt.where(ConversationPart.id > _decode_or_404(IdPrefix.PART, after, "after"))
+    stmt = stmt.order_by(ConversationPart.id.asc()).limit(n + 1)
+    parts = list((await session.scalars(stmt)).all())
+    next_cursor = None
+    if len(parts) > n:
+        parts = parts[:n]
+        next_cursor = encode_public_id(IdPrefix.PART, parts[-1].id)
+    return Page(items=[part_out(p) for p in parts], next_cursor=next_cursor)
+
+
 # --- Comments + notes + rating (W1) -------------------------------------------
 
 
@@ -640,3 +672,77 @@ async def delete_saved_reply(session: AsyncSession, principal: Principal, public
         raise NotFoundError("saved reply not found")
     await session.delete(reply)
     await session.flush()
+
+
+# --- Realtime: tokens, subscription authz, typing, presence (RFC-001 §6.3) ----
+
+
+def realtime_token(principal: Principal) -> schemas.RealtimeTokenOut:
+    """Mint an agent's Centrifugo connection token (identity only; channels are authorised
+    per-subscription below)."""
+    authorize(principal, min_role=Role.AGENT)
+    token = realtime.agent_connection_token(
+        admin_id=principal.admin_id, workspace_id=principal.workspace_id, role=principal.role
+    )
+    return schemas.RealtimeTokenOut(token=token, ws_url=get_settings().centrifugo_ws_url)
+
+
+async def _authorize_channel(session: AsyncSession, principal: Principal, channel: str) -> None:
+    """Reject any channel the agent may not subscribe to. ``conv:*`` is validated by loading the
+    conversation (RLS scopes it to the workspace → 404 for another tenant's conversation);
+    ``inbox:{ws}:{team}`` must carry the caller's own workspace id."""
+    if channel.startswith("conv:"):
+        await _get(
+            session, _decode_or_404(IdPrefix.CONVERSATION, channel[len("conv:") :], "channel")
+        )
+    elif channel.startswith("inbox:"):
+        segments = channel.split(":")
+        own_ws = encode_public_id(IdPrefix.WORKSPACE, principal.workspace_id)
+        if len(segments) != 3 or segments[1] != own_ws:
+            raise PermissionDeniedError("channel is not in your workspace")
+    else:
+        raise ValidationError(f"unknown channel {channel!r}")
+
+
+async def realtime_subscribe(
+    session: AsyncSession, principal: Principal, req: schemas.SubscribeIn
+) -> schemas.SubscribeOut:
+    """Mint per-channel subscription tokens for the agent, one per authorised channel."""
+    authorize(principal, min_role=Role.AGENT)
+    sub = str(principal.admin_id)
+    tokens: dict[str, str] = {}
+    for channel in req.channels:
+        await _authorize_channel(session, principal, channel)
+        tokens[channel] = realtime.mint_subscription_token(sub, channel)
+    return schemas.SubscribeOut(tokens=tokens, ws_url=get_settings().centrifugo_ws_url)
+
+
+def widget_token(conv: Conversation) -> str:
+    """Mint a widget contact's connection token, pinned to its one conversation channel.
+
+    ponytail: exposed as a service function for P0.4 (proven by test); the widget HTTP surface
+    that authenticates a contact and calls this lands in P0.6 (identity verification)."""
+    return realtime.widget_connection_token(
+        workspace_id=conv.workspace_id, contact_id=conv.contact_id, conversation_id=conv.id
+    )
+
+
+async def relay_typing(session: AsyncSession, principal: Principal, public_id: str) -> None:
+    """Relay an agent typing indicator to the conversation channel (Redis TTL + Centrifugo)."""
+    authorize(principal, min_role=Role.AGENT)
+    cid = _decode_or_404(IdPrefix.CONVERSATION, public_id, "conversation")
+    await _get(session, cid)  # 404 if not this workspace's conversation
+    await realtime.relay_typing(
+        encode_public_id(IdPrefix.CONVERSATION, cid),
+        actor_kind="admin",
+        actor_id=encode_public_id(IdPrefix.ADMIN, principal.admin_id),
+    )
+
+
+async def presence_heartbeat(principal: Principal) -> None:
+    """Mark the agent online (Redis TTL) and relay presence to the workspace inbox firehose."""
+    authorize(principal, min_role=Role.AGENT)
+    await realtime.mark_online(
+        encode_public_id(IdPrefix.WORKSPACE, principal.workspace_id),
+        encode_public_id(IdPrefix.ADMIN, principal.admin_id),
+    )

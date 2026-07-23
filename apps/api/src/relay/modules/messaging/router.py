@@ -66,8 +66,16 @@ async def list_parts(
     _principal: CurrentPrincipal,
     session: SessionDep,
     cursor: str | None = None,
+    after: str | None = Query(
+        default=None,
+        description="Realtime long-poll fallback: return parts *newer* than this part id, "
+        "ascending (RFC-001 §6.3). Gated by the realtime_fallback flag.",
+    ),
     limit: int | None = Query(default=None, ge=1, le=200),
 ) -> Page[schemas.PartOut]:
+    # ?after= is the long-poll fallback (ascending); otherwise the default newest-first thread page.
+    if after is not None:
+        return await service.list_parts_after(session, conversation_id, after=after, limit=limit)
     return await service.list_parts(session, conversation_id, cursor=cursor, limit=limit)
 
 
@@ -224,4 +232,40 @@ async def delete_saved_reply(
     reply_id: str, principal: CurrentPrincipal, session: SessionDep
 ) -> Response:
     await service.delete_saved_reply(session, principal, reply_id)
+    return Response(status_code=status.HTTP_204_NO_CONTENT)
+
+
+# --- Realtime (Centrifugo tokens + typing/presence, RFC-001 §6.3) -------------
+
+
+@router.post("/realtime/token", response_model=schemas.RealtimeTokenOut)
+async def realtime_token(principal: CurrentPrincipal) -> schemas.RealtimeTokenOut:
+    """Mint the agent's Centrifugo connection token + return the websocket URL to dial."""
+    return service.realtime_token(principal)
+
+
+@router.post("/realtime/subscribe", response_model=schemas.SubscribeOut)
+async def realtime_subscribe(
+    req: schemas.SubscribeIn, principal: CurrentPrincipal, session: SessionDep
+) -> schemas.SubscribeOut:
+    """Mint per-channel subscription tokens, each authorised against the caller's workspace."""
+    return await service.realtime_subscribe(session, principal, req)
+
+
+@router.post("/realtime/presence", status_code=204)
+async def presence_heartbeat(principal: CurrentPrincipal) -> Response:
+    """Refresh the agent's presence (Redis TTL) and relay it through Centrifugo."""
+    await service.presence_heartbeat(principal)
+    return Response(status_code=status.HTTP_204_NO_CONTENT)
+
+
+@router.post("/conversations/{conversation_id}/typing", status_code=204)
+async def typing(
+    conversation_id: str,
+    _req: schemas.TypingIn,
+    principal: CurrentPrincipal,
+    session: SessionDep,
+) -> Response:
+    """Relay a typing indicator to the conversation channel (ephemeral: Redis TTL + Centrifugo)."""
+    await service.relay_typing(session, principal, conversation_id)
     return Response(status_code=status.HTTP_204_NO_CONTENT)

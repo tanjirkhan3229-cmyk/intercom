@@ -1,9 +1,11 @@
 """Small operational CLI.
 
-- ``relay openapi``       — dump the spec used to generate the TS SDK.
-- ``relay outbox-relay``  — run the transactional-outbox relay (RFC-001 §6.5): a dedicated,
-                            single-instance process that drains ``outbox`` to Redis at-least-once
-                            (LISTEN/NOTIFY-woken, poll fallback). Run one per deployment.
+- ``relay openapi``          — dump the spec used to generate the TS SDK.
+- ``relay outbox-relay``     — run the transactional-outbox relay (RFC-001 §6.5): a dedicated,
+                               single-instance process that drains ``outbox`` to Redis
+                               at-least-once (LISTEN/NOTIFY-woken, poll fallback). One per deploy.
+- ``relay realtime-fanout``  — run the realtime-fanout consumer (RFC-001 §6.3): consumes the
+                               outbox Redis stream and publishes conversation events to Centrifugo.
 """
 
 from __future__ import annotations
@@ -28,17 +30,27 @@ def _outbox_relay() -> int:
     return 0
 
 
+def _realtime_fanout() -> int:
+    from relay.core.realtime_fanout import main as run_fanout
+
+    run_fanout()
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="relay")
     sub = parser.add_subparsers(dest="command", required=True)
     sub.add_parser("openapi", help="Print the OpenAPI spec to stdout")
     sub.add_parser("outbox-relay", help="Run the transactional-outbox relay")
+    sub.add_parser("realtime-fanout", help="Run the realtime-fanout consumer (outbox → Centrifugo)")
 
     args = parser.parse_args(argv)
     if args.command == "openapi":
         return _openapi()
     if args.command == "outbox-relay":
         return _outbox_relay()
+    if args.command == "realtime-fanout":
+        return _realtime_fanout()
     parser.error(f"unknown command {args.command!r}")
     return 2
 

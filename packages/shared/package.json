@@ -9,6 +9,7 @@
     ".": "./src/index.ts",
     "./tokens": "./src/tokens.ts",
     "./types": "./src/types.ts",
+    "./realtime": "./src/realtime.ts",
     "./tailwind-preset": "./src/tailwind-preset.ts"
   },
   "scripts": {

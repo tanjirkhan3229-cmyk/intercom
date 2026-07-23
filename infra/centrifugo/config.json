@@ -1,0 +1,21 @@
+{
+  "engine": "redis",
+  "allowed_origins": ["http://localhost:3000", "http://localhost:5173"],
+  "health": true,
+  "namespaces": [
+    {
+      "name": "conv",
+      "presence": false,
+      "join_leave": false,
+      "history_size": 0,
+      "history_ttl": "0s"
+    },
+    {
+      "name": "inbox",
+      "presence": false,
+      "join_leave": false,
+      "history_size": 0,
+      "history_ttl": "0s"
+    }
+  ]
+}
