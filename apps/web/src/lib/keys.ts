@@ -20,4 +20,6 @@ export const qk = {
   articlesRoot: ["articles"] as const,
   article: (id: string) => ["article", id] as const,
   helpCenter: ["help-center"] as const,
+  // Knowledge Hub sources (P1.1)
+  sources: ["sources"] as const,
 };

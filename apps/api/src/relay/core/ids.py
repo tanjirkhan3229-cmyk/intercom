@@ -109,6 +109,7 @@ class IdPrefix:
     SAVED_REPLY = "rep"
     ARTICLE = "art"
     COLLECTION = "col"
+    EXTERNAL_SOURCE = "src"  # knowledge Hub external source (P1.1)
     PLAN = "pln"
     SUBSCRIPTION = "sub"
     # channels module (P0.7 — email)

@@ -155,6 +155,72 @@ async def update_help_center(
     return await service.update_help_center(session, principal, req)
 
 
+# --- Knowledge Hub: external sources + retrieval (admin, P1.1) -----------------
+
+
+@router.post("/sources", response_model=schemas.SourceOut, status_code=201)
+async def create_source(
+    req: schemas.SourceCreate, principal: CurrentPrincipal, session: SessionDep
+) -> schemas.SourceOut:
+    return await service.create_source(session, principal, req)
+
+
+@router.get("/sources", response_model=list[schemas.SourceOut])
+async def list_sources(
+    _principal: CurrentPrincipal, session: SessionDep
+) -> list[schemas.SourceOut]:
+    return await service.list_sources(session)
+
+
+@router.get("/sources/{source_id}", response_model=schemas.SourceOut)
+async def get_source(
+    source_id: str, _principal: CurrentPrincipal, session: SessionDep
+) -> schemas.SourceOut:
+    return await service.get_source(session, source_id)
+
+
+@router.patch("/sources/{source_id}", response_model=schemas.SourceOut)
+async def update_source(
+    source_id: str,
+    req: schemas.SourceUpdate,
+    principal: CurrentPrincipal,
+    session: SessionDep,
+) -> schemas.SourceOut:
+    return await service.update_source(session, principal, source_id, req)
+
+
+@router.delete("/sources/{source_id}", status_code=204)
+async def delete_source(
+    source_id: str, principal: CurrentPrincipal, session: SessionDep
+) -> Response:
+    await service.delete_source(session, principal, source_id)
+    return Response(status_code=status.HTTP_204_NO_CONTENT)
+
+
+@router.post("/sources/{source_id}/sync", response_model=schemas.SourceOut)
+async def sync_source(
+    source_id: str, principal: CurrentPrincipal, session: SessionDep
+) -> schemas.SourceOut:
+    """Trigger an async (re-)sync + index. Returns the source; poll its ``status`` for readiness."""
+    return await service.sync_source(session, principal, source_id)
+
+
+@router.post("/knowledge/search", response_model=schemas.RetrievalResponse)
+async def search_knowledge(
+    req: schemas.RetrievalRequest, principal: CurrentPrincipal, session: SessionDep
+) -> schemas.RetrievalResponse:
+    """Hybrid retrieval debug surface (the "why did it retrieve that?" view) — any teammate."""
+    return await service.search_knowledge(session, principal, req)
+
+
+@router.post("/knowledge/reembed")
+async def reembed(
+    req: schemas.ReembedRequest, principal: CurrentPrincipal, session: SessionDep
+) -> dict[str, int | str]:
+    """Enqueue a dual-version re-embed with atomic per-workspace cutover (RFC-003 §4)."""
+    return await service.reembed(session, principal, req)
+
+
 # --- Public Help Center (unauthenticated, slug-resolved) ----------------------
 
 

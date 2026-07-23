@@ -68,6 +68,36 @@ jobs:
       - name: migration lint (no non-concurrent index on large tables)
         run: uv run python ../../scripts/check_migrations.py
 
+  # ---- Secret scan: whole-tree, runs on EVERY PR (a leaked secret anywhere is a gate failure,
+  # not just under apps/api) — deliberately ungated (RFC-001 §13, DoD "no secrets in code"). ----
+  secret-scan:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: secret scan (git-tracked tree)
+        run: python scripts/scan_secrets.py
+
+  # ---- Dependency audit: scoped to the api toolchain (audits apps/api Python deps). ----
+  security:
+    needs: [changes, api-lint]
+    if: ${{ needs.changes.outputs.api == 'true' }}
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: apps/api
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+        with:
+          enable-cache: true
+      - run: uv python install 3.12
+      - run: uv sync --dev
+      - name: dependency audit (pip-audit)
+        run: uv run pip-audit
+
   web-lint:
     needs: changes
     if: ${{ needs.changes.outputs.web == 'true' }}

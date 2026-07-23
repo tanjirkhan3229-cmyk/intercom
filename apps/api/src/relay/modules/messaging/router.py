@@ -69,9 +69,7 @@ async def list_conversations(
     )
 
 
-@router.get(
-    "/contacts/{contact_id}/conversations", response_model=Page[schemas.ConversationOut]
-)
+@router.get("/contacts/{contact_id}/conversations", response_model=Page[schemas.ConversationOut])
 async def list_contact_conversations(
     contact_id: str,
     _principal: CurrentPrincipal,
