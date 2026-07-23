@@ -18,6 +18,7 @@ from relay import __version__, health
 from relay.core.errors import register_exception_handlers
 from relay.core.logging import configure_logging, get_logger
 from relay.core.middleware import RequestContextMiddleware
+from relay.core.observability import MetricsMiddleware, init_app_observability
 from relay.core.public_api import PublicApiMiddleware
 from relay.modules.billing.router import router as billing_router
 from relay.modules.channels.router import router as channels_router
@@ -56,6 +57,9 @@ def create_app() -> FastAPI:
     app.add_middleware(PublicApiMiddleware)
     app.add_middleware(TenancyMiddleware)
     app.add_middleware(RequestContextMiddleware)
+    # MetricsMiddleware sits just inside CORS: preflight OPTIONS answered by CORS aren't metered,
+    # but every routed request is timed/counted (RFC-001 §9 golden signals).
+    app.add_middleware(MetricsMiddleware)
     # The messenger widget embeds on any customer origin and the agent app runs on its own
     # domain — both call this API cross-origin, and the widget lead cookie needs credentialed
     # requests (so a wildcard origin won't do; we reflect the request origin instead).
@@ -89,6 +93,9 @@ def create_app() -> FastAPI:
     app.include_router(channels_router, prefix="/v0")
     app.include_router(reporting_router, prefix="/v0")
     app.include_router(webhooks_router, prefix="/v0")
+
+    # Sentry + OTel tracing + FastAPI instrumentation (all no-ops unless configured — RFC-001 §9).
+    init_app_observability(app)
 
     return app
 

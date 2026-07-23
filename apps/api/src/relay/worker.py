@@ -9,9 +9,11 @@ from __future__ import annotations
 
 from celery import Celery
 from celery.schedules import crontab
+from celery.signals import worker_init
 from kombu import Queue
 
 from relay.core.logging import configure_logging
+from relay.core.observability import init_worker_observability, start_metrics_server
 from relay.settings import get_settings
 
 settings = get_settings()
@@ -132,3 +134,12 @@ celery_app.conf.beat_schedule = {
 @celery_app.on_after_configure.connect
 def _setup_logging(**_kwargs: object) -> None:
     configure_logging()
+    # Sentry + OTel (Celery instrumentation) + task-metric signals — all no-ops unless configured.
+    init_worker_observability()
+
+
+@worker_init.connect
+def _start_worker_metrics(**_kwargs: object) -> None:
+    # Fires once in the parent worker process (before prefork), so a single scrape server binds
+    # ``metrics_port``. In multiprocess mode children write to PROMETHEUS_MULTIPROC_DIR.
+    start_metrics_server()
