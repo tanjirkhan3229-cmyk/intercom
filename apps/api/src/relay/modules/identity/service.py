@@ -12,6 +12,7 @@ import datetime as dt
 import re
 import uuid
 from dataclasses import dataclass
+from typing import Any
 
 from sqlalchemy import func, select, text, update
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -398,6 +399,24 @@ async def get_workspace(session: AsyncSession, workspace_id: uuid.UUID) -> Works
     if ws is None:
         raise NotFoundError("workspace not found")
     return ws
+
+
+@dataclass(frozen=True)
+class WidgetSettings:
+    """Public workspace facts the messenger widget boots with. The ``messenger`` blob is the raw
+    ``settings['messenger']`` sub-object (theme/office-hours/expected-reply + the identity-
+    verification config); callers must strip the secret before returning it to a client."""
+
+    name: str
+    messenger: dict[str, Any]
+
+
+async def widget_settings(session: AsyncSession, workspace_id: uuid.UUID) -> WidgetSettings:
+    """Cross-module accessor (the widget BFF lives in ``messaging``) so no other module imports
+    the ``Workspace`` model. Raises ``NotFoundError`` for an unknown ``app_id``."""
+    ws = await get_workspace(session, workspace_id)
+    messenger = ws.settings.get("messenger") if isinstance(ws.settings, dict) else None
+    return WidgetSettings(name=ws.name, messenger=dict(messenger) if messenger else {})
 
 
 async def update_workspace(

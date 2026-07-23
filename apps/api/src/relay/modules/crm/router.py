@@ -52,6 +52,17 @@ async def get_contact(
     return await service.get_contact(session, contact_id)
 
 
+@router.get("/contacts/{contact_id}/events", response_model=list[schemas.EventOut])
+async def list_contact_events(
+    contact_id: str,
+    _principal: CurrentPrincipal,
+    session: SessionDep,
+    limit: int | None = Query(default=None, ge=1, le=200),
+) -> list[schemas.EventOut]:
+    """Recent tracked events for a contact (inbox side panel activity feed)."""
+    return await service.list_recent_events(session, contact_id, limit=limit)
+
+
 @router.patch("/contacts/{contact_id}", response_model=schemas.ContactOut)
 async def update_contact(
     contact_id: str,

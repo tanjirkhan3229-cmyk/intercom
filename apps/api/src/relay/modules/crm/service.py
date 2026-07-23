@@ -35,7 +35,7 @@ from relay.core.rbac import Role, authorize
 from relay.core.redis import get_redis
 
 from . import schemas
-from .models import AttributeDefinition, Company, Contact, ContactCompany
+from .models import AttributeDefinition, Company, Contact, ContactCompany, Event
 
 # Redis keys for the event firehose buffer (RFC-002 §5.4 W3).
 EVENTS_BUFFER_PREFIX = "events:buffer:"
@@ -227,6 +227,71 @@ async def identify(
     return contact_out(contact)
 
 
+# --- Contacts: widget boot (contact-facing, no agent authz) -------------------
+
+
+async def resolve_widget_contact(
+    session: AsyncSession,
+    *,
+    workspace_id: uuid.UUID,
+    verified: bool,
+    external_id: str | None = None,
+    email: str | None = None,
+    name: str | None = None,
+    cookie_contact_id: uuid.UUID | None = None,
+) -> schemas.ContactOut:
+    """Resolve the contact a widget boot represents. Called by the messaging widget BFF, *not*
+    an agent — the caller has already established trust (verified HMAC, or an anonymous visitor).
+
+    - **Verified** (identity verification on): idempotent upsert of a ``user`` keyed on
+      ``external_id`` (same partial-unique index as :func:`identify`), so repeat visits and
+      concurrent boots converge on one contact.
+    - **Anonymous:** resume the cookie's lead if it still exists in this workspace (RLS scopes
+      the lookup), else create a fresh ``lead``. Provided name/email fill only blank fields — an
+      unverified visitor never overwrites known data.
+    """
+    if verified:
+        if not external_id:
+            raise ValidationError("identity verification requires user.external_id")
+        stmt = (
+            pg_insert(Contact)
+            .values(
+                workspace_id=workspace_id,
+                kind="user",
+                external_id=external_id,
+                email=email,
+                name=name,
+            )
+            .on_conflict_do_update(
+                index_elements=[Contact.workspace_id, Contact.external_id],
+                index_where=sa.and_(Contact.external_id.isnot(None), Contact.deleted_at.is_(None)),
+                set_={
+                    "email": func.coalesce(Contact.email, email),
+                    "name": func.coalesce(Contact.name, name),
+                },
+            )
+            .returning(Contact)
+        )
+        contact = (await session.execute(stmt)).scalar_one()
+        await session.flush()
+        return contact_out(contact)
+
+    if cookie_contact_id is not None:
+        existing = await session.get(Contact, cookie_contact_id)
+        if existing is not None and existing.deleted_at is None:
+            if name and not existing.name:
+                existing.name = name
+            if email and not existing.email:
+                existing.email = email
+            await session.flush()
+            return contact_out(existing)
+
+    lead = Contact(workspace_id=workspace_id, kind="lead", email=email, name=name, custom={})
+    session.add(lead)
+    await session.flush()
+    return contact_out(lead)
+
+
 # --- Contacts: CRUD -----------------------------------------------------------
 
 
@@ -262,6 +327,36 @@ async def _get_contact(session: AsyncSession, contact_id: uuid.UUID) -> Contact:
 async def get_contact(session: AsyncSession, public_id: str) -> schemas.ContactOut:
     cid = _decode_or_404(IdPrefix.CONTACT, public_id, "contact")
     return contact_out(await _get_contact(session, cid))
+
+
+async def list_recent_events(
+    session: AsyncSession, contact_public_id: str, *, limit: int | None = None
+) -> list[schemas.EventOut]:
+    """Most-recent tracked events for a contact — the inbox contact side panel's activity feed.
+
+    A bounded newest-first read (not a hot keyset path): the panel shows the latest slice only.
+    RLS forces the query into the caller's workspace, and the BRIN/partition layout on
+    ``created_at`` keeps the ``ORDER BY created_at DESC LIMIT n`` cheap.
+    """
+    cid = _decode_or_404(IdPrefix.CONTACT, contact_public_id, "contact")
+    await _get_contact(session, cid)  # 404 (RLS-scoped) for an unknown/other-tenant contact
+    n = clamp_limit(limit)
+    stmt = (
+        select(Event)
+        .where(Event.contact_id == cid)
+        .order_by(Event.created_at.desc(), Event.id.desc())
+        .limit(n)
+    )
+    rows = list((await session.scalars(stmt)).all())
+    return [
+        schemas.EventOut(
+            name=e.name,
+            contact_id=contact_public_id,
+            properties=e.properties,
+            created_at=e.created_at,
+        )
+        for e in rows
+    ]
 
 
 async def list_contacts(

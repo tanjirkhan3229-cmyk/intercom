@@ -54,6 +54,9 @@ class Settings(BaseSettings):
     )
     access_token_ttl_seconds: int = 900  # 15 minutes
     refresh_token_ttl_seconds: int = 60 * 60 * 24 * 30  # 30 days
+    # Widget contact/lead session (RFC-001 §10): long-lived so a lead's cookie survives visits,
+    # but low-privilege (own conversations only). Rotation/refresh can tighten this later.
+    widget_session_ttl_seconds: int = 60 * 60 * 24 * 30  # 30 days
 
     # --- Google OIDC (optional) ---
     google_oidc_client_id: str | None = None
@@ -71,6 +74,26 @@ class Settings(BaseSettings):
     stripe_checkout_cancel_url: str = "http://localhost:3000/billing/cancel"
     stripe_portal_return_url: str = "http://localhost:3000/settings/billing"
     billing_trial_days: int = 14
+
+    # --- Realtime gateway (Centrifugo — RFC-001 §6.1 gateway row, §6.3) ---
+    # Realtime is bought, not built: the API mints per-connection + per-channel HS256 tokens and
+    # publishes fan-out via Centrifugo's server API. ``token_secret`` must match Centrifugo's
+    # ``token_hmac_secret_key`` (see infra/centrifugo/config.json); it is deliberately *separate*
+    # from ``jwt_signing_key`` so the two token audiences never cross.
+    centrifugo_api_url: str = (
+        "http://localhost:8001"  # server→Centrifugo (compose: http://centrifugo:8000)
+    )
+    centrifugo_ws_url: str = "ws://localhost:8001/connection/websocket"  # client-facing
+    centrifugo_api_key: str = Field(default="dev-centrifugo-api-key", min_length=8)
+    centrifugo_token_secret: str = Field(
+        default="dev-centrifugo-token-secret-change-me", min_length=16
+    )
+    centrifugo_token_ttl_seconds: int = 60 * 30  # connection/subscription token lifetime
+
+    # realtime_fallback kill switch (RFC-001 §6.3): when on, clients may downgrade to long-poll.
+    # ponytail: a settings bool, not an Unleash client — one flag doesn't justify the dependency.
+    # Per-workspace override + true runtime toggling arrive with the flag service (P1).
+    realtime_fallback: bool = True
 
     @property
     def database_url_psycopg(self) -> str:

@@ -22,19 +22,32 @@ import datetime as dt
 import uuid
 from typing import Any
 
+import jwt
 import sqlalchemy as sa
 from sqlalchemy import select, update
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from relay.core import outbox
-from relay.core.errors import ConflictError, NotFoundError, ValidationError
+from relay.core import outbox, realtime
+from relay.core.errors import (
+    ConflictError,
+    NotFoundError,
+    PermissionDeniedError,
+    ValidationError,
+)
 from relay.core.ids import IdPrefix, decode_public_id, encode_public_id, uuid7
 from relay.core.pagination import Page, clamp_limit
-from relay.core.principal import Principal
+from relay.core.principal import ContactPrincipal, Principal
 from relay.core.rbac import Role, authorize
 from relay.core.redis import get_redis
+from relay.core.security import (
+    create_widget_session_token,
+    decode_widget_session_token,
+    verify_identity_hash,
+)
+from relay.modules.crm import service as crm_service
 from relay.modules.identity import service as identity_service
+from relay.settings import get_settings
 
 from . import events, schemas
 from .models import Conversation, ConversationPart, ConversationTag, SavedReply
@@ -229,24 +242,29 @@ async def _append_part(
 # --- Conversations: create + list + read --------------------------------------
 
 
-async def create_conversation(
-    session: AsyncSession, principal: Principal, req: schemas.ConversationCreate
-) -> schemas.ConversationOut:
+async def _open_conversation(
+    session: AsyncSession,
+    *,
+    workspace_id: uuid.UUID,
+    contact_id: uuid.UUID,
+    channel: str,
+    team_id: uuid.UUID | None,
+    body: str,
+    attachments: list[dict[str, Any]] | None = None,
+    channel_meta: dict[str, Any] | None = None,
+) -> Conversation:
     """Open a conversation with the contact's first message (a contact ``comment``).
 
     Emits ``conversation.created`` then ``conversation.part.created`` — both on the conversation
-    aggregate, so their outbox seqs order the thread from the start.
+    aggregate, so their outbox seqs order the thread from the start. Shared by the agent create
+    path and the widget's contact path so the head/outbox/``waiting_since`` rules never drift.
     """
-    authorize(principal, min_role=Role.AGENT)
-    contact_id = _decode_or_404(IdPrefix.CONTACT, req.contact_id, "contact")
-    team_id = _decode_or_404(IdPrefix.TEAM, req.team_id, "team") if req.team_id else None
-
     now = _now()
     conv = Conversation(
         id=uuid7(),
-        workspace_id=principal.workspace_id,
+        workspace_id=workspace_id,
         contact_id=contact_id,
-        channel=req.channel,
+        channel=channel,
         team_id=team_id,
         state="open",
         last_part_at=now,
@@ -270,6 +288,26 @@ async def create_conversation(
         author_kind="contact",
         author_id=contact_id,
         part_type="comment",
+        body=body,
+        attachments=attachments,
+        channel_meta=channel_meta,
+    )
+    return conv
+
+
+async def create_conversation(
+    session: AsyncSession, principal: Principal, req: schemas.ConversationCreate
+) -> schemas.ConversationOut:
+    """Agent-authored conversation open (models a visitor message on the contact's behalf)."""
+    authorize(principal, min_role=Role.AGENT)
+    contact_id = _decode_or_404(IdPrefix.CONTACT, req.contact_id, "contact")
+    team_id = _decode_or_404(IdPrefix.TEAM, req.team_id, "team") if req.team_id else None
+    conv = await _open_conversation(
+        session,
+        workspace_id=principal.workspace_id,
+        contact_id=contact_id,
+        channel=req.channel,
+        team_id=team_id,
         body=req.body,
         attachments=req.attachments,
         channel_meta=req.channel_meta,
@@ -277,8 +315,14 @@ async def create_conversation(
     return conversation_out(conv)
 
 
-def _encode_cursor(c: Conversation) -> str:
-    ts = c.waiting_since.isoformat() if c.waiting_since is not None else ""
+_UNSET: Any = object()  # sentinel: "argument not supplied" (distinct from a real ``None`` ts)
+
+
+def _encode_cursor(c: Conversation, key: dt.datetime | None = _UNSET) -> str:
+    """Encode a keyset cursor as ``<iso-ts>|<public-id>``. ``key`` defaults to ``waiting_since``
+    (the R1 order key); pass ``last_part_at`` for the contact-scoped ordering."""
+    ts_value = c.waiting_since if key is _UNSET else key
+    ts = ts_value.isoformat() if ts_value is not None else ""
     return f"{ts}|{encode_public_id(IdPrefix.CONVERSATION, c.id)}"
 
 
@@ -294,6 +338,7 @@ async def list_conversations(
     state: str = "open",
     team_id: str | None = None,
     assignee_id: str | None = None,
+    unassigned: bool = False,
     cursor: str | None = None,
     limit: int | None = None,
 ) -> Page[schemas.ConversationOut]:
@@ -302,12 +347,17 @@ async def list_conversations(
     The base query (no cursor) is exactly the RFC-002 §6 R1 shape and is served by the partial
     index ``conv_open_team`` / ``conv_open_asgn`` (Index Scan, no Sort — proven by an EXPLAIN
     test). Keyset pagination adds ``id`` as a tiebreak and walks NULL-``waiting_since`` rows last.
+
+    ``unassigned=True`` powers the P0.5 "Unassigned" view (``assignee_id IS NULL``); it is
+    mutually exclusive with ``assignee_id`` (a conversation cannot be both).
     """
     n = clamp_limit(limit)
     stmt = select(Conversation).where(Conversation.state == state)
     if team_id is not None:
         stmt = stmt.where(Conversation.team_id == _decode_or_404(IdPrefix.TEAM, team_id, "team"))
-    if assignee_id is not None:
+    if unassigned:
+        stmt = stmt.where(Conversation.assignee_id.is_(None))
+    elif assignee_id is not None:
         stmt = stmt.where(
             Conversation.assignee_id == _decode_or_404(IdPrefix.ADMIN, assignee_id, "assignee")
         )
@@ -334,6 +384,47 @@ async def list_conversations(
     return Page(items=[conversation_out(c) for c in convs], next_cursor=next_cursor)
 
 
+async def list_conversations_for_contact(
+    session: AsyncSession,
+    contact_public_id: str,
+    *,
+    cursor: str | None = None,
+    limit: int | None = None,
+) -> Page[schemas.ConversationOut]:
+    """A contact's recent conversations across all states — the P0.5 contact side panel.
+
+    Ordered newest-activity-first (``last_part_at`` desc, ``id`` desc tiebreak); keyset
+    paginated. RLS scopes rows to the caller's workspace, so a bad contact id simply yields an
+    empty page rather than leaking another tenant's threads.
+    """
+    # Verify the contact belongs to the caller's workspace via the crm service (the only
+    # sanctioned cross-module channel, RFC-001 §6.2) so an unknown/other-tenant id 404s rather
+    # than silently returning an empty page.
+    from relay.modules.crm import service as crm_service
+
+    n = clamp_limit(limit)
+    await crm_service.get_contact(session, contact_public_id)  # 404 if not in this workspace
+    cid = _decode_or_404(IdPrefix.CONTACT, contact_public_id, "contact")
+    stmt = select(Conversation).where(Conversation.contact_id == cid)
+    stmt = stmt.order_by(Conversation.last_part_at.desc(), Conversation.id.desc())
+    if cursor:
+        lpa, i = _decode_cursor(cursor)
+        if lpa is not None:
+            stmt = stmt.where(
+                sa.or_(
+                    Conversation.last_part_at < lpa,
+                    sa.and_(Conversation.last_part_at == lpa, Conversation.id < i),
+                )
+            )
+    convs = list((await session.scalars(stmt.limit(n + 1))).all())
+    next_cursor = None
+    if len(convs) > n:
+        convs = convs[:n]
+        last = convs[-1]
+        next_cursor = _encode_cursor(last, key=last.last_part_at)
+    return Page(items=[conversation_out(c) for c in convs], next_cursor=next_cursor)
+
+
 async def get_conversation(session: AsyncSession, public_id: str) -> schemas.ConversationOut:
     cid = _decode_or_404(IdPrefix.CONVERSATION, public_id, "conversation")
     return conversation_out(await _get(session, cid))
@@ -350,6 +441,32 @@ async def list_parts(
         cur = _decode_or_404(IdPrefix.PART, cursor, "cursor")
         stmt = stmt.where(ConversationPart.id < cur)
     stmt = stmt.order_by(ConversationPart.id.desc()).limit(n + 1)
+    parts = list((await session.scalars(stmt)).all())
+    next_cursor = None
+    if len(parts) > n:
+        parts = parts[:n]
+        next_cursor = encode_public_id(IdPrefix.PART, parts[-1].id)
+    return Page(items=[part_out(p) for p in parts], next_cursor=next_cursor)
+
+
+async def list_parts_after(
+    session: AsyncSession, public_id: str, *, after: str | None = None, limit: int | None = None
+) -> Page[schemas.PartOut]:
+    """Ascending parts newer than ``after`` — the realtime long-poll fallback (RFC-001 §6.3).
+
+    When the websocket is down, clients poll this with the id of the newest part they hold; the
+    outbox/DB is the source of truth, so a gateway outage never loses a message (parts are read
+    straight from Postgres). UUIDv7 part ids are time-ordered, so the ``id > after`` keyset is
+    chronological. Gated by the ``realtime_fallback`` kill switch."""
+    if not get_settings().realtime_fallback:
+        raise PermissionDeniedError("realtime fallback polling is disabled")
+    cid = _decode_or_404(IdPrefix.CONVERSATION, public_id, "conversation")
+    await _get(session, cid)  # 404 (RLS-scoped) if the conversation isn't this workspace's
+    n = clamp_limit(limit)
+    stmt = select(ConversationPart).where(ConversationPart.conversation_id == cid)
+    if after:
+        stmt = stmt.where(ConversationPart.id > _decode_or_404(IdPrefix.PART, after, "after"))
+    stmt = stmt.order_by(ConversationPart.id.asc()).limit(n + 1)
     parts = list((await session.scalars(stmt)).all())
     next_cursor = None
     if len(parts) > n:
@@ -640,3 +757,318 @@ async def delete_saved_reply(session: AsyncSession, principal: Principal, public
         raise NotFoundError("saved reply not found")
     await session.delete(reply)
     await session.flush()
+
+
+# --- Realtime: tokens, subscription authz, typing, presence (RFC-001 §6.3) ----
+
+
+def realtime_token(principal: Principal) -> schemas.RealtimeTokenOut:
+    """Mint an agent's Centrifugo connection token (identity only; channels are authorised
+    per-subscription below)."""
+    authorize(principal, min_role=Role.AGENT)
+    token = realtime.agent_connection_token(
+        admin_id=principal.admin_id, workspace_id=principal.workspace_id, role=principal.role
+    )
+    return schemas.RealtimeTokenOut(token=token, ws_url=get_settings().centrifugo_ws_url)
+
+
+async def _authorize_channel(session: AsyncSession, principal: Principal, channel: str) -> None:
+    """Reject any channel the agent may not subscribe to. ``conv:*`` is validated by loading the
+    conversation (RLS scopes it to the workspace → 404 for another tenant's conversation);
+    ``inbox:{ws}:{team}`` must carry the caller's own workspace id."""
+    if channel.startswith("conv:"):
+        await _get(
+            session, _decode_or_404(IdPrefix.CONVERSATION, channel[len("conv:") :], "channel")
+        )
+    elif channel.startswith("inbox:"):
+        segments = channel.split(":")
+        own_ws = encode_public_id(IdPrefix.WORKSPACE, principal.workspace_id)
+        if len(segments) != 3 or segments[1] != own_ws:
+            raise PermissionDeniedError("channel is not in your workspace")
+    else:
+        raise ValidationError(f"unknown channel {channel!r}")
+
+
+async def realtime_subscribe(
+    session: AsyncSession, principal: Principal, req: schemas.SubscribeIn
+) -> schemas.SubscribeOut:
+    """Mint per-channel subscription tokens for the agent, one per authorised channel."""
+    authorize(principal, min_role=Role.AGENT)
+    sub = str(principal.admin_id)
+    tokens: dict[str, str] = {}
+    for channel in req.channels:
+        await _authorize_channel(session, principal, channel)
+        tokens[channel] = realtime.mint_subscription_token(sub, channel)
+    return schemas.SubscribeOut(tokens=tokens, ws_url=get_settings().centrifugo_ws_url)
+
+
+def widget_token(conv: Conversation) -> str:
+    """Mint a widget contact's connection token, pinned to its one conversation channel.
+
+    ponytail: exposed as a service function for P0.4 (proven by test); the widget HTTP surface
+    that authenticates a contact and calls this lands in P0.6 (identity verification)."""
+    return realtime.widget_connection_token(
+        workspace_id=conv.workspace_id, contact_id=conv.contact_id, conversation_id=conv.id
+    )
+
+
+async def relay_typing(session: AsyncSession, principal: Principal, public_id: str) -> None:
+    """Relay an agent typing indicator to the conversation channel (Redis TTL + Centrifugo)."""
+    authorize(principal, min_role=Role.AGENT)
+    cid = _decode_or_404(IdPrefix.CONVERSATION, public_id, "conversation")
+    await _get(session, cid)  # 404 if not this workspace's conversation
+    await realtime.relay_typing(
+        encode_public_id(IdPrefix.CONVERSATION, cid),
+        actor_kind="admin",
+        actor_id=encode_public_id(IdPrefix.ADMIN, principal.admin_id),
+    )
+
+
+async def presence_heartbeat(principal: Principal) -> None:
+    """Mark the agent online (Redis TTL) and relay presence to the workspace inbox firehose."""
+    authorize(principal, min_role=Role.AGENT)
+    await realtime.mark_online(
+        encode_public_id(IdPrefix.WORKSPACE, principal.workspace_id),
+        encode_public_id(IdPrefix.ADMIN, principal.admin_id),
+    )
+
+
+# --- Widget (messenger) BFF ---------------------------------------------------
+#
+# The end-user surface for the P0.6 messenger. It composes identity (workspace settings +
+# HMAC identity verification), crm (contact/lead resolution) and messaging (conversations)
+# behind one contact-scoped API. Everything below runs as a ``ContactPrincipal``: no RBAC role,
+# so the ``authorize`` choke point rejects it from every agent path; a contact only ever touches
+# its own conversations (checked here) and RLS scopes reads to the workspace.
+
+
+def _messenger_config(ws: identity_service.WidgetSettings) -> schemas.MessengerConfig:
+    """Project the raw ``settings['messenger']`` blob into the public, secret-free config the
+    widget themes from. Missing/garbage keys fall back to safe defaults."""
+    m = ws.messenger
+
+    def _obj(key: str) -> dict[str, Any]:
+        val = m.get(key)
+        return val if isinstance(val, dict) else {}
+
+    theme = _obj("theme")
+    iv = _obj("identity_verification")
+    raw_hours = m.get("office_hours")
+    office_hours = raw_hours if isinstance(raw_hours, dict) else None
+    position = theme.get("launcher_position")
+    return schemas.MessengerConfig(
+        primary_color=theme.get("primary_color") or "#2563eb",
+        launcher_position=position if position in ("left", "right") else "right",
+        greeting=m.get("greeting"),
+        expected_reply_time=m.get("expected_reply_time"),
+        office_hours=office_hours,
+        identity_verification_enabled=bool(iv.get("enabled")),
+    )
+
+
+def _identity_secret(ws: identity_service.WidgetSettings) -> str | None:
+    iv = ws.messenger.get("identity_verification")
+    return iv.get("secret") if isinstance(iv, dict) else None
+
+
+def _resume_contact_id(token: str | None, workspace_id: uuid.UUID) -> uuid.UUID | None:
+    """Decode a reload's session token (cookie or resume_token) to the lead it represents, but
+    only if it belongs to *this* workspace — a token from another tenant never resumes here."""
+    if not token:
+        return None
+    try:
+        claims = decode_widget_session_token(token)
+        if uuid.UUID(claims["ws"]) != workspace_id:
+            return None
+        return uuid.UUID(claims["sub"])
+    except (jwt.PyJWTError, KeyError, ValueError):
+        return None
+
+
+async def _contact_conversations(
+    session: AsyncSession, contact_id: uuid.UUID
+) -> list[schemas.ConversationOut]:
+    stmt = (
+        select(Conversation)
+        .where(Conversation.contact_id == contact_id)
+        .order_by(Conversation.id.desc())  # uuid7 → newest first
+        .limit(clamp_limit(None))
+    )
+    return [conversation_out(c) for c in (await session.scalars(stmt)).all()]
+
+
+async def widget_boot(
+    session: AsyncSession,
+    *,
+    workspace_id: uuid.UUID,
+    req: schemas.WidgetBootRequest,
+    cookie_token: str | None,
+) -> schemas.WidgetBootResponse:
+    """Boot a messenger session.
+
+    Identity verification ON → the host page must supply ``user.external_id`` + a matching
+    ``user_hash`` (HMAC-SHA256(secret, external_id)); a mismatch is rejected (403). OFF → resume
+    the cookie's lead or create a fresh cookie-scoped one. Returns a widget session token (also
+    set as an httpOnly cookie by the router), the public config, and the contact's conversations.
+    """
+    ws = await identity_service.widget_settings(session, workspace_id)  # 404 for unknown app_id
+    config = _messenger_config(ws)
+    user = req.user
+
+    if config.identity_verification_enabled:
+        if not user or not user.external_id or not req.user_hash:
+            raise PermissionDeniedError("identity verification is required for this workspace")
+        secret = _identity_secret(ws)
+        if not secret or not verify_identity_hash(secret, user.external_id, req.user_hash):
+            raise PermissionDeniedError("identity verification failed")
+        contact = await crm_service.resolve_widget_contact(
+            session,
+            workspace_id=workspace_id,
+            verified=True,
+            external_id=user.external_id,
+            email=user.email,
+            name=user.name,
+        )
+    else:
+        resume = _resume_contact_id(cookie_token or req.resume_token, workspace_id)
+        contact = await crm_service.resolve_widget_contact(
+            session,
+            workspace_id=workspace_id,
+            verified=False,
+            email=user.email if user else None,
+            name=user.name if user else None,
+            cookie_contact_id=resume,
+        )
+
+    contact_uuid = decode_public_id(IdPrefix.CONTACT, contact.id)
+    token = create_widget_session_token(contact_id=contact_uuid, workspace_id=workspace_id)
+    return schemas.WidgetBootResponse(
+        session_token=token,
+        contact=schemas.WidgetContactOut(
+            id=contact.id, kind=contact.kind, email=contact.email, name=contact.name
+        ),
+        config=config,
+        conversations=await _contact_conversations(session, contact_uuid),
+    )
+
+
+async def _load_contact_conv(
+    session: AsyncSession, public_id: str, contact_id: uuid.UUID, *, for_update: bool = False
+) -> Conversation:
+    """Load a conversation and assert it belongs to this contact. Any other conversation 404s
+    (never leak that another visitor's conversation exists), even within the same workspace."""
+    cid = _decode_or_404(IdPrefix.CONVERSATION, public_id, "conversation")
+    conv = await (_load_for_update(session, cid) if for_update else _get(session, cid))
+    if conv.contact_id != contact_id:
+        raise NotFoundError("conversation not found")
+    return conv
+
+
+async def contact_start_conversation(
+    session: AsyncSession, contact: ContactPrincipal, req: schemas.WidgetStartConversation
+) -> schemas.ConversationOut:
+    """A visitor opens a new conversation with their first message (RFC-001 §6.3 heartbeat)."""
+    conv = await _open_conversation(
+        session,
+        workspace_id=contact.workspace_id,
+        contact_id=contact.contact_id,
+        channel="chat",
+        team_id=None,
+        body=req.body,
+        attachments=req.attachments,
+    )
+    return conversation_out(conv)
+
+
+async def contact_reply(
+    session: AsyncSession, contact: ContactPrincipal, public_id: str, req: schemas.WidgetReplyIn
+) -> schemas.PartOut:
+    """A visitor's follow-up message — a contact ``comment`` (starts the SLA clock via W1)."""
+    conv = await _load_contact_conv(session, public_id, contact.contact_id, for_update=True)
+    part = await _append_part(
+        session,
+        conv,
+        author_kind="contact",
+        author_id=contact.contact_id,
+        part_type="comment",
+        body=req.body,
+        attachments=req.attachments,
+    )
+    return part_out(part)
+
+
+async def contact_list_conversations(
+    session: AsyncSession,
+    contact: ContactPrincipal,
+    *,
+    cursor: str | None = None,
+    limit: int | None = None,
+) -> Page[schemas.ConversationOut]:
+    """The visitor's own conversation list (newest first, keyset)."""
+    n = clamp_limit(limit)
+    stmt = select(Conversation).where(Conversation.contact_id == contact.contact_id)
+    if cursor:
+        stmt = stmt.where(Conversation.id < _decode_or_404(IdPrefix.CONVERSATION, cursor, "cursor"))
+    convs = list((await session.scalars(stmt.order_by(Conversation.id.desc()).limit(n + 1))).all())
+    next_cursor = None
+    if len(convs) > n:
+        convs = convs[:n]
+        next_cursor = encode_public_id(IdPrefix.CONVERSATION, convs[-1].id)
+    return Page(items=[conversation_out(c) for c in convs], next_cursor=next_cursor)
+
+
+async def contact_list_parts(
+    session: AsyncSession,
+    contact: ContactPrincipal,
+    public_id: str,
+    *,
+    after: str | None = None,
+    cursor: str | None = None,
+    limit: int | None = None,
+) -> Page[schemas.PartOut]:
+    """Thread page for a conversation the contact owns. ``?after=`` is the realtime long-poll
+    fallback (ascending); otherwise the newest-first page. Ownership is checked first, then the
+    agent read path is reused verbatim."""
+    await _load_contact_conv(session, public_id, contact.contact_id)  # 404 unless owned
+    if after is not None:
+        return await list_parts_after(session, public_id, after=after, limit=limit)
+    return await list_parts(session, public_id, cursor=cursor, limit=limit)
+
+
+async def contact_rate(
+    session: AsyncSession, contact: ContactPrincipal, public_id: str, req: schemas.WidgetRatingIn
+) -> schemas.PartOut:
+    """A conversation rating (CSAT) submitted by the visitor, typically on close."""
+    conv = await _load_contact_conv(session, public_id, contact.contact_id, for_update=True)
+    part = await _append_part(
+        session,
+        conv,
+        author_kind="contact",
+        author_id=contact.contact_id,
+        part_type="rating",
+        body=req.remark,
+        meta={"rating": req.rating},
+    )
+    return part_out(part)
+
+
+async def contact_typing(session: AsyncSession, contact: ContactPrincipal, public_id: str) -> None:
+    """Relay a visitor typing indicator to the conversation channel (Redis TTL + Centrifugo)."""
+    conv = await _load_contact_conv(session, public_id, contact.contact_id)
+    await realtime.relay_typing(
+        encode_public_id(IdPrefix.CONVERSATION, conv.id),
+        actor_kind="contact",
+        actor_id=encode_public_id(IdPrefix.CONTACT, contact.contact_id),
+    )
+
+
+async def contact_realtime_token(
+    session: AsyncSession, contact: ContactPrincipal, public_id: str
+) -> schemas.RealtimeTokenOut:
+    """Mint the widget's Centrifugo connection token, pinned by the gateway to exactly this
+    conversation's channel (RFC-001 §6.3; the pinning is proven by the P0.4 token test)."""
+    conv = await _load_contact_conv(session, public_id, contact.contact_id)
+    token = realtime.widget_connection_token(
+        workspace_id=conv.workspace_id, contact_id=conv.contact_id, conversation_id=conv.id
+    )
+    return schemas.RealtimeTokenOut(token=token, ws_url=get_settings().centrifugo_ws_url)

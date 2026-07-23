@@ -1,43 +1,55 @@
 "use client";
 
-import { useAuth } from "@/lib/auth";
-import { Button } from "@/components/ui/button";
+import { useRouter, useSearchParams } from "next/navigation";
+import * as React from "react";
+import { InboxShell } from "@/components/inbox/inbox-shell";
+import { DEFAULT_VIEW } from "@/lib/views";
+import { LoadingState } from "@/components/inbox/states";
 
-export default function AgentApp() {
-  const { status } = useAuth();
+/**
+ * Inbox route. View + selected conversation live in the URL (`?view=you&c=cnv_…`) so a refresh
+ * restores the exact working state (RFC P0.5 acceptance) and links are shareable.
+ */
+function Inbox() {
+  const router = useRouter();
+  const params = useSearchParams();
+  const view = params.get("view") || DEFAULT_VIEW;
+  const selected = params.get("c");
 
-  if (status === "loading") {
-    return <ShellFrame>Loading…</ShellFrame>;
-  }
+  const setUrl = React.useCallback(
+    (next: { view?: string; c?: string | null }) => {
+      const sp = new URLSearchParams(params.toString());
+      if (next.view !== undefined) sp.set("view", next.view);
+      if (next.c !== undefined) {
+        if (next.c === null) sp.delete("c");
+        else sp.set("c", next.c);
+      }
+      router.replace(`/app?${sp.toString()}`, { scroll: false });
+    },
+    [params, router],
+  );
 
-  if (status === "unauthenticated") {
-    return (
-      <ShellFrame>
-        <div className="flex flex-col items-center gap-4">
-          <p className="text-muted-foreground">Sign in to access the inbox.</p>
-          <Button disabled>Sign in (P0.1)</Button>
-        </div>
-      </ShellFrame>
-    );
-  }
-
-  // Authenticated: the three-pane inbox (views / list / thread) ships in P0.5.
   return (
-    <div className="grid h-screen grid-cols-[240px_360px_1fr] divide-x divide-border">
-      <aside className="p-4 text-sm text-muted-foreground">Views</aside>
-      <section className="p-4 text-sm text-muted-foreground">Conversations</section>
-      <section className="p-4 text-sm text-muted-foreground">Thread</section>
-    </div>
+    <InboxShell
+      view={view}
+      onView={(v) => setUrl({ view: v, c: null })}
+      selectedId={selected}
+      onSelect={(id) => setUrl({ c: id })}
+    />
   );
 }
 
-function ShellFrame({ children }: { children: React.ReactNode }) {
+export default function AgentAppPage() {
+  // useSearchParams needs a Suspense boundary (Next 15 App Router).
   return (
-    <main className="flex min-h-screen items-center justify-center px-6 text-center">
-      <div>
-        <h1 className="mb-6 text-2xl font-semibold">Relay Inbox</h1>
-        {children}
-      </div>
-    </main>
+    <React.Suspense
+      fallback={
+        <div className="h-screen">
+          <LoadingState />
+        </div>
+      }
+    >
+      <Inbox />
+    </React.Suspense>
   );
 }
