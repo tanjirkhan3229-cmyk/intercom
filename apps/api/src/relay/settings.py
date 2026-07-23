@@ -95,6 +95,17 @@ class Settings(BaseSettings):
     # Per-workspace override + true runtime toggling arrive with the flag service (P1).
     realtime_fallback: bool = True
 
+    # --- Help Center (P0.8, RFC-001 §6.1 `web` ISR row) ---
+    # The hosted Help Center runs on Next.js ISR. On publish/unpublish the knowledge module
+    # writes an outbox event; the ``help-center-revalidate`` consumer POSTs the affected paths
+    # to ``help_center_revalidate_url`` (the site's /api/revalidate route) so the ISR cache
+    # refreshes within seconds. Leave the URL unset to rely on time-based ISR only.
+    help_center_base_url: str = "http://localhost:3000"
+    help_center_revalidate_url: str | None = None
+    help_center_revalidate_secret: str = Field(
+        default="dev-help-center-revalidate-secret", min_length=8
+    )
+
     @property
     def database_url_psycopg(self) -> str:
         """Plain (driverless) DSN for raw psycopg use in sync Celery tasks (e.g. the events

@@ -13,4 +13,11 @@ export const qk = {
   contact: (id: string) => ["contact", id] as const,
   contactConversations: (id: string) => ["contact-conversations", id] as const,
   contactEvents: (id: string) => ["contact-events", id] as const,
+  // Help Center (P0.8)
+  collections: ["collections"] as const,
+  articles: (params: { status?: string; collectionId?: string }) =>
+    ["articles", params] as const,
+  articlesRoot: ["articles"] as const,
+  article: (id: string) => ["article", id] as const,
+  helpCenter: ["help-center"] as const,
 };

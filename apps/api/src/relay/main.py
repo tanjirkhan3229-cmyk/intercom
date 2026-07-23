@@ -22,6 +22,7 @@ from relay.modules.billing.router import router as billing_router
 from relay.modules.crm.router import router as crm_router
 from relay.modules.identity.middleware import TenancyMiddleware
 from relay.modules.identity.router import router as identity_router
+from relay.modules.knowledge.router import router as knowledge_router
 from relay.modules.messaging.router import router as messaging_router
 from relay.modules.platform.router import router as platform_router
 
@@ -70,6 +71,7 @@ def create_app() -> FastAPI:
     app.include_router(crm_router, prefix="/v0")
     app.include_router(messaging_router, prefix="/v0")
     app.include_router(billing_router, prefix="/v0")
+    app.include_router(knowledge_router, prefix="/v0")
     app.include_router(platform_router, prefix="/v0")
 
     return app
