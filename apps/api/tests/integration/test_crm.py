@@ -150,9 +150,7 @@ async def test_contacts_keyset_pagination(client: httpx.AsyncClient) -> None:
     assert page1["next_cursor"] is not None
 
     page2 = (
-        await client.get(
-            f"/v0/contacts?limit=2&cursor={page1['next_cursor']}", headers=_auth(tok)
-        )
+        await client.get(f"/v0/contacts?limit=2&cursor={page1['next_cursor']}", headers=_auth(tok))
     ).json()
     assert len(page2["items"]) == 2
     # Disjoint pages (keyset, no overlap).
@@ -171,9 +169,7 @@ async def test_track_10k_events_land_via_copy(client: httpx.AsyncClient) -> None
 
     tok, ws = await _owner(client, "Firehose")
     contact = (
-        await client.post(
-            "/v0/contacts/identify", json={"external_id": "u1"}, headers=_auth(tok)
-        )
+        await client.post("/v0/contacts/identify", json={"external_id": "u1"}, headers=_auth(tok))
     ).json()
 
     events = [
@@ -210,11 +206,9 @@ async def test_events_are_workspace_isolated(client: httpx.AsyncClient) -> None:
     from relay.modules.crm.tasks import drain_events
 
     tok_a, ws_a = await _owner(client, "EvtA")
-    tok_b, ws_b = await _owner(client, "EvtB")
+    _tok_b, ws_b = await _owner(client, "EvtB")
     contact_a = (
-        await client.post(
-            "/v0/contacts/identify", json={"external_id": "u1"}, headers=_auth(tok_a)
-        )
+        await client.post("/v0/contacts/identify", json={"external_id": "u1"}, headers=_auth(tok_a))
     ).json()
     await client.post(
         "/v0/events/track",
@@ -252,9 +246,7 @@ async def test_typeahead_uses_trigram_index(client: httpx.AsyncClient) -> None:
         # gin(name) index is never usable under RLS because ILIKE is not leakproof.)
         await session.execute(text("SET LOCAL enable_seqscan = off"))
         rows = (
-            await session.execute(
-                text("EXPLAIN SELECT id FROM contacts WHERE name ILIKE '%ali%'")
-            )
+            await session.execute(text("EXPLAIN SELECT id FROM contacts WHERE name ILIKE '%ali%'"))
         ).all()
     plan = "\n".join(r[0] for r in rows)
     assert "contacts_name_trgm" in plan, plan
@@ -279,9 +271,7 @@ async def test_contacts_cross_tenant_isolation(client: httpx.AsyncClient) -> Non
     # B sees none of A's contacts.
     assert (await client.get("/v0/contacts", headers=_auth(tok_b))).json()["items"] == []
     # B cannot read A's contact (RLS hides it → 404).
-    assert (
-        await client.get(f"/v0/contacts/{a['id']}", headers=_auth(tok_b))
-    ).status_code == 404
+    assert (await client.get(f"/v0/contacts/{a['id']}", headers=_auth(tok_b))).status_code == 404
     # B can reuse the same external_id for its own, distinct contact.
     b = (
         await client.post(
@@ -322,9 +312,7 @@ async def test_company_crud_and_linking(client: httpx.AsyncClient) -> None:
         )
     ).json()
     contact = (
-        await client.post(
-            "/v0/contacts/identify", json={"external_id": "u1"}, headers=_auth(tok)
-        )
+        await client.post("/v0/contacts/identify", json={"external_id": "u1"}, headers=_auth(tok))
     ).json()
 
     link = await client.post(

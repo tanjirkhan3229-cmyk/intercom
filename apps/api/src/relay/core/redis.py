@@ -23,7 +23,10 @@ def get_redis() -> aredis.Redis:
     """Async Redis client for request paths. Decodes responses to ``str``."""
     global _async_client
     if _async_client is None:
-        _async_client = aredis.from_url(get_settings().redis_cache_url, decode_responses=True)
+        # redis-py's ``from_url`` ships without a return annotation → no-untyped-call under strict.
+        _async_client = aredis.from_url(  # type: ignore[no-untyped-call]
+            get_settings().redis_cache_url, decode_responses=True
+        )
     return _async_client
 
 
@@ -31,7 +34,9 @@ def get_redis_sync() -> redis.Redis:
     """Synchronous Redis client for Celery tasks. Decodes responses to ``str``."""
     global _sync_client
     if _sync_client is None:
-        _sync_client = redis.from_url(get_settings().redis_cache_url, decode_responses=True)
+        _sync_client = redis.from_url(  # type: ignore[no-untyped-call]
+            get_settings().redis_cache_url, decode_responses=True
+        )
     return _sync_client
 
 

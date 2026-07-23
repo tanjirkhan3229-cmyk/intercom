@@ -46,7 +46,7 @@ celery_app.conf.update(
     broker_connection_retry_on_startup=True,
     result_expires=3600,
     # Feature modules register their task modules here as they land.
-    include=["relay.modules.crm.tasks"],
+    include=["relay.modules.crm.tasks", "relay.modules.messaging.tasks"],
 )
 
 # Durable timers / periodic housekeeping (RFC-001 §6.4, the `beat` runtime shape).
@@ -61,6 +61,18 @@ celery_app.conf.beat_schedule = {
     "crm-ensure-partitions": {
         "task": "crm.ensure_partitions",
         "schedule": crontab(hour="3", minute="0"),  # daily 03:00
+        "options": {"queue": "housekeeping"},
+    },
+    # Same for the conversation_parts firehose (messaging owns its own partitioned table).
+    "messaging-ensure-partitions": {
+        "task": "messaging.ensure_partitions",
+        "schedule": crontab(hour="3", minute="5"),  # daily 03:05
+        "options": {"queue": "housekeeping"},
+    },
+    # Drop expired idempotency keys so the ledger stays small (RFC-002 §5.6).
+    "messaging-purge-idempotency": {
+        "task": "messaging.purge_idempotency_keys",
+        "schedule": crontab(hour="3", minute="10"),  # daily 03:10
         "options": {"queue": "housekeeping"},
     },
 }

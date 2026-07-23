@@ -29,7 +29,7 @@ from relay.core.security import (
 from relay.settings import get_settings
 
 from . import schemas
-from .models import Admin, ApiKey, Membership, RefreshToken, Team, Workspace
+from .models import Admin, ApiKey, Membership, RefreshToken, Team, TeamMembership, Workspace
 from .principal import Principal
 from .rbac import Role, authorize
 
@@ -521,6 +521,23 @@ async def delete_team(session: AsyncSession, principal: Principal, team_id: uuid
         raise NotFoundError("team not found")
     await session.delete(team)
     await session.flush()
+
+
+async def team_agent_ids(session: AsyncSession, team_id: uuid.UUID | None) -> list[uuid.UUID]:
+    """Assignable admin ids for round-robin (RFC-002 §7 — the ``messaging`` service calls this).
+
+    Members with an assignable role (``owner``/``admin``/``agent``; ``restricted`` excluded);
+    scoped to a team when ``team_id`` is given, else the whole workspace. Ordered by ``admin_id``
+    so the round-robin rotation is deterministic. RLS scopes every read to the workspace.
+    """
+    stmt = select(Membership.admin_id).where(
+        Membership.role.in_([Role.OWNER, Role.ADMIN, Role.AGENT])
+    )
+    if team_id is not None:
+        stmt = stmt.join(TeamMembership, TeamMembership.membership_id == Membership.id).where(
+            TeamMembership.team_id == team_id
+        )
+    return list((await session.scalars(stmt.order_by(Membership.admin_id))).all())
 
 
 # --- API keys -----------------------------------------------------------------
