@@ -19,6 +19,13 @@ dist/
 .next/
 *.tsbuildinfo
 
+# terraform (keep .terraform.lock.hcl and *.tfvars tracked — they're config, not state/secrets)
+.terraform/
+*.tfstate
+*.tfstate.*
+crash.log
+crash.*.log
+
 # os/editor
 .DS_Store
 *.tmp
