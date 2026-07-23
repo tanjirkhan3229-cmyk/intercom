@@ -52,6 +52,9 @@ async def list_conversations(
     state: str = Query(default="open", pattern="^(open|snoozed|closed)$"),
     team_id: str | None = Query(default=None),
     assignee_id: str | None = Query(default=None),
+    unassigned: bool = Query(
+        default=False, description="Return only conversations with no assignee (Unassigned view)."
+    ),
     cursor: str | None = None,
     limit: int | None = Query(default=None, ge=1, le=200),
 ) -> Page[schemas.ConversationOut]:
@@ -60,8 +63,25 @@ async def list_conversations(
         state=state,
         team_id=team_id,
         assignee_id=assignee_id,
+        unassigned=unassigned,
         cursor=cursor,
         limit=limit,
+    )
+
+
+@router.get(
+    "/contacts/{contact_id}/conversations", response_model=Page[schemas.ConversationOut]
+)
+async def list_contact_conversations(
+    contact_id: str,
+    _principal: CurrentPrincipal,
+    session: SessionDep,
+    cursor: str | None = None,
+    limit: int | None = Query(default=None, ge=1, le=200),
+) -> Page[schemas.ConversationOut]:
+    """A contact's recent conversations (all states) for the inbox contact side panel."""
+    return await service.list_conversations_for_contact(
+        session, contact_id, cursor=cursor, limit=limit
     )
 
 

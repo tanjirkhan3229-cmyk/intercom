@@ -55,7 +55,10 @@ export class RelayClient {
     this.baseUrl = opts.baseUrl.replace(/\/$/, "");
     this.token = opts.token;
     this.timeoutMs = opts.timeoutMs ?? 15_000;
-    this.fetchImpl = opts.fetch ?? globalThis.fetch;
+    // Bind to the global: the browser's native `fetch` throws "Illegal invocation" if called
+    // with `this` set to anything but the Window/global (which happens when stored on an instance
+    // field and invoked as `this.fetchImpl(...)`).
+    this.fetchImpl = opts.fetch ?? globalThis.fetch.bind(globalThis);
   }
 
   async request<T>(path: string, opts: RequestOptions = {}): Promise<T> {

@@ -31,9 +31,11 @@ export type PartType = "comment" | "note" | "assignment" | "state_change" | "rat
 /** Prefixed base62 public identifier, e.g. `wrk_...`, `cnv_...` (RFC-002 §5.1). */
 export type PublicId = string;
 
-/** Keyset-paginated envelope — no OFFSET anywhere (RFC-002 §6). */
+/** Keyset-paginated envelope — no OFFSET anywhere (RFC-002 §6).
+ * Field name mirrors the API's ``relay.core.pagination.Page`` JSON (``items``), so the SDK and
+ * web app deserialize responses directly. */
 export interface Page<T> {
-  data: T[];
+  items: T[];
   next_cursor: string | null;
 }
 
