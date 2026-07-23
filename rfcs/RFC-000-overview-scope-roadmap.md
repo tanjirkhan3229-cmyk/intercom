@@ -35,7 +35,7 @@ Shared team inboxes; conversation states (open / snoozed / closed) + waiting-on 
 ### 2.3 Tickets
 Customer-visible tickets (with forms), back-office tickets, and tracker tickets (one issue linked to many conversations); custom ticket types with typed attributes; ticket states with customizable labels; ticket portal view in Messenger; linking conversations ↔ tickets; ticket SLAs and reporting.
 
-### 2.4 AI agent ("Aide" — our Fin equivalent)
+### 2.4 AI agent ("Neko" — our Fin equivalent)
 Autonomous agent over chat, email, WhatsApp, and API (voice in phase 3); retrieval-augmented generation over all knowledge sources; custom answers (curated responses for specific questions); **actions** (admin-defined API calls the agent can invoke, e.g. order status); **procedures** (multi-step, rule-bound task flows); tone/persona and answer-length controls; multilingual; handoff rules and escalation to humans; preview/test sandbox; per-resolution metering; analytics (resolution rate, deflection, CSAT impact, unresolved-topic clustering / content gaps). Plus **Copilot** for agents: AI drafts, conversation summarization, tone rewriting, article suggestion — human always in the loop.
 
 ### 2.5 Knowledge
@@ -109,29 +109,29 @@ The minimum loop: visitor messages in the widget → agent answers in the inbox 
 ### Phase 1 — Sellable MVP: AI agent + automation (months 4–6)
 What makes it a product rather than a chat tool.
 
-- **Aide v1 (AI agent):** RAG over help center + snippets; handoff rules; preview sandbox; resolution metering + billing; agent analytics v0 (resolution rate, handoff reasons). Chat channel only.
-- Workflows v1: triggers/conditions/actions incl. "hand to Aide", collect-data bot steps; execution logs.
+- **Neko v1 (AI agent):** RAG over help center + snippets; handoff rules; preview sandbox; resolution metering + billing; agent analytics v0 (resolution rate, handoff reasons). Chat channel only.
+- Workflows v1: triggers/conditions/actions incl. "hand to Neko", collect-data bot steps; execution logs.
 - Inbox v2: SLAs + business hours, custom views, balanced assignment, collision detection, CSAT reporting.
 - Knowledge Hub v1: PDF + URL sync as sources; audience scoping.
 - Outbound v1: in-app posts/chats + one-off email broadcasts with subscription types.
 - Segments + CSV import; Slack + Zapier + generic webhook integrations; mobile SDKs beta.
-- **Exit criteria:** Aide ≥35% resolution rate on design-partner traffic (measured per RFC-003 §8 definition); workflow engine at-least-once with zero duplicate side effects in chaos tests; first paying tenants on metered billing.
+- **Exit criteria:** Neko ≥35% resolution rate on design-partner traffic (measured per RFC-003 §8 definition); workflow engine at-least-once with zero duplicate side effects in chaos tests; first paying tenants on metered billing.
 
 ### Phase 2 — Omnichannel + outbound depth + platform (months 7–12)
 Parity on breadth; this is the largest phase.
 
-- Channels: WhatsApp, Facebook Messenger, Instagram, SMS (Twilio); Aide on email + WhatsApp.
+- Channels: WhatsApp, Facebook Messenger, Instagram, SMS (Twilio); Neko on email + WhatsApp.
 - Tickets: ticket types, customer/back-office/tracker tickets, portal in Messenger.
 - Outbound v2: Series builder (visual graph, waits/branches/A-B), surveys, tours, banners, tooltips, checklists, push; frequency capping, control groups.
-- Copilot for agents (drafts, summarize, tone); Aide actions (admin-defined API tools) + custom answers.
+- Copilot for agents (drafts, summarize, tone); Neko actions (admin-defined API tools) + custom answers.
 - Custom reports & dashboards (chart builder over datasets); CSV scheduled exports.
 - App framework v1: OAuth apps, inbox cards + messenger apps (declarative schema); directory with ≈10 launch integrations.
 - Enterprise base: SAML SSO, granular permissions, audit log.
-- **Exit criteria:** ≥5 channels GA; Aide ≥50% resolution on eligible traffic; series engine survives 10× send-burst load test; app framework has 3 external developers building.
+- **Exit criteria:** ≥5 channels GA; Neko ≥50% resolution on eligible traffic; series engine survives 10× send-burst load test; app framework has 3 external developers building.
 
 ### Phase 3 — Scale, voice & enterprise (months 13–18)
-- Voice channel (SIP/Twilio Voice + realtime speech pipeline) with Aide-on-voice pilot.
-- Aide v3: procedures (multi-step policies), guidance, per-tenant eval harness, unresolved-topic clustering → content-gap suggestions.
+- Voice channel (SIP/Twilio Voice + realtime speech pipeline) with Neko-on-voice pilot.
+- Neko v3: procedures (multi-step policies), guidance, per-tenant eval harness, unresolved-topic clustering → content-gap suggestions.
 - EU data-residency cell; warehouse export (S3/Parquet + BigQuery/Snowflake share); multibrand (multiple messengers/help centers per workspace).
 - Reporting v3: topics via embedding clustering; forecasting (staffing).
 - Scale hardening per RFC-001 §8: events pipeline graduation (ClickHouse), search graduation (OpenSearch) **if numbers demand**.
@@ -142,13 +142,13 @@ Parity on breadth; this is the largest phase.
 
 **Team ramp:** phase 0: 6 eng (2 backend, 2 frontend, 1 full-stack, 1 AI/ML) + design + PM. Phase 1–2: +4–6 (channels, workflows/outbound, AI eval, SRE-leaning backend). Phase 3: ≈14 eng total + first support/solutions hires. Payroll dominates: ≈$2.2–3.5M/yr fully loaded at phase-2 size.
 
-**Infrastructure at target envelope** (detail in RFC-001 §5.4): ≈$8–12k/month at the 50M msg/mo, 500k-connection design point — before LLM inference. **LLM inference is the swing cost:** at 1M Aide conversations/mo, $0.01–0.05 model cost per conversation ⇒ $10–50k/mo, recovered by per-resolution pricing (≈$0.99) with healthy margin (RFC-003 §9). Early phases run at <$2k/mo infra.
+**Infrastructure at target envelope** (detail in RFC-001 §5.4): ≈$8–12k/month at the 50M msg/mo, 500k-connection design point — before LLM inference. **LLM inference is the swing cost:** at 1M Neko conversations/mo, $0.01–0.05 model cost per conversation ⇒ $10–50k/mo, recovered by per-resolution pricing (≈$0.99) with healthy margin (RFC-003 §9). Early phases run at <$2k/mo infra.
 
 ## 7. Top risks (project level)
 
 | Risk | Likelihood | Mitigation |
 |---|---|---|
-| AI resolution rate below sellable bar (<35%) | Medium | Eval harness from day one (RFC-003 §8); curated custom answers; scope Aide to eligible intents first; human-handoff UX that never dead-ends |
+| AI resolution rate below sellable bar (<35%) | Medium | Eval harness from day one (RFC-003 §8); curated custom answers; scope Neko to eligible intents first; human-handoff UX that never dead-ends |
 | Channel-partner gatekeeping (Meta/WhatsApp BSP approval, carrier SMS review) | Medium-high | Start applications in phase 1; use aggregator (Twilio/Meta BSP) rather than direct integrations; email+chat carry MVP |
 | Scope sprawl — §2 is ≈8 products | High | Phase gates above are contractual; each phase sellable; non-goals enforced |
 | Realtime fleet cost/complexity underestimated | Medium | Buy-not-build gateway default (RFC-001 §6.2); load test at 2× target connections in phase 1 |

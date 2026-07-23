@@ -1,6 +1,6 @@
 # Phase 3 — Scale, Voice & Enterprise (months 13–18)
 
-Goal: voice channel, Aide procedures + eval harness, EU residency cell, warehouse export, multibrand, and the *conditional* scale graduations — pulled only if their RFC triggers fire. Exit criteria: RFC-000 §5 Phase 3.
+Goal: voice channel, Neko procedures + eval harness, EU residency cell, warehouse export, multibrand, and the *conditional* scale graduations — pulled only if their RFC triggers fire. Exit criteria: RFC-000 §5 Phase 3.
 
 ---
 
@@ -11,11 +11,11 @@ Goal: voice channel, Aide procedures + eval harness, EU residency cell, warehous
 >
 > - Media service colocated with the gateway tier (RFC-001 §6.6): SIP/number provisioning, inbound call → streaming ASR → the P1.2 turn pipeline in voice mode (partial-utterance handling, barge-in, smaller model tier + aggressive custom-answer matching per RFC-003 §7) → streaming TTS; human escalation = warm transfer to agent browser (WebRTC) with live transcript; voicemail fallback off-hours.
 > - Calls land as conversations (`channel='voice'`) with recording + transcript parts; consent/recording disclosures configurable per workspace jurisdiction.
-> - Aide-on-voice behind per-workspace pilot flag; latency budget: first audible response < 1.5 s p95.
+> - Neko-on-voice behind per-workspace pilot flag; latency budget: first audible response < 1.5 s p95.
 >
 > **Acceptance:** live pilot call resolves an order-status query via an Action, then warm-transfers on request with transcript visible to the agent; sub-1.5 s p95 measured over 100 staged calls; recording consent line plays where configured; transcript quality spot-audit ≥ 95% WER-acceptable.
 
-### P3.2 — Aide v3: procedures, guidance, per-tenant evals, content gaps
+### P3.2 — Neko v3: procedures, guidance, per-tenant evals, content gaps
 **Depends on:** P2.7 · **Read first:** RFC-003 §5 (procedures), §8 (evals, gaps); RFC-002 §5.6 (workflow ledger pattern)
 
 > - **Procedures:** versioned declarative multi-step policies (guard conditions, steps, slot schema) compiled to constrained plans walked step-by-step on a ledger (reuse the workflow_run_steps pattern) — the model fills slots and drafts messages; **the ledger owns control flow** (RFC-003 §5 verbatim). Admin authoring UI with test-run sandbox; procedures can invoke Actions with the same budgets.

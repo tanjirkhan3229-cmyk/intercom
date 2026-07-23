@@ -1,6 +1,6 @@
 # Relay — an Intercom-class customer service platform (blueprint)
 
-**Relay** (working codename) is a full architecture blueprint and phased build plan for an AI-first customer-service SaaS with Intercom-class capability: embeddable Messenger, omnichannel helpdesk, autonomous AI agent ("Aide"), help center, outbound messaging, no-code workflows, CRM, reporting, and a public API/app platform — designed for **FastAPI + Next.js + PostgreSQL** at growth-SaaS scale (1–5k workspaces, 10–50M messages/month).
+**Relay** (working codename) is a full architecture blueprint and phased build plan for an AI-first customer-service SaaS with Intercom-class capability: embeddable Messenger, omnichannel helpdesk, autonomous AI agent ("Neko"), help center, outbound messaging, no-code workflows, CRM, reporting, and a public API/app platform — designed for **FastAPI + Next.js + PostgreSQL** at growth-SaaS scale (1–5k workspaces, 10–50M messages/month).
 
 This repo currently contains the **design docs and executable build prompts**. Application code lands via the phased plan below (Prompt P0.0 scaffolds the monorepo).
 
@@ -11,11 +11,11 @@ This repo currently contains the **design docs and executable build prompts**. A
 │   ├── RFC-000-overview-scope-roadmap    # Feature parity map, sizing envelope, 4-phase roadmap, team & budget
 │   ├── RFC-001-system-architecture       # Topology, realtime pipeline, queues/outbox, failure modes, CI/CD, security
 │   ├── RFC-002-data-layer                # Postgres schema, tenancy/RLS, indexing, partitioning, pgvector+FTS, ops
-│   └── RFC-003-ai-agent                  # Aide: RAG pipeline, orchestration, guardrails, evals, unit economics
+│   └── RFC-003-ai-agent                  # Neko: RAG pipeline, orchestration, guardrails, evals, unit economics
 └── build-prompts/             # 42 ordered agent prompts that build the product, phase by phase
     ├── README.md                          # How to run them + master engineering rules
     ├── phase-0-foundation.md              # Months 0–3: core loop (widget → inbox), email, help center, billing, API
-    ├── phase-1-ai-automation.md           # Months 4–6: Aide v1, workflows, SLAs, outbound v1 → sellable MVP
+    ├── phase-1-ai-automation.md           # Months 4–6: Neko v1, workflows, SLAs, outbound v1 → sellable MVP
     ├── phase-2-omnichannel-platform.md    # Months 7–12: WhatsApp/Meta/SMS, tickets, Series, Copilot, apps, SSO
     └── phase-3-scale-enterprise.md        # Months 13–18: voice, procedures/evals, EU cell, scale graduations
 ```

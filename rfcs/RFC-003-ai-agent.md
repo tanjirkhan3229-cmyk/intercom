@@ -1,13 +1,13 @@
-# Relay — AI Agent & Knowledge Subsystem "Aide" (RFC-003)
+# Relay — AI Agent & Knowledge Subsystem "Neko" (RFC-003)
 
 _Status: Draft · Author: Architecture WG · Date: 2026-07-22_
 _One-line summary: The autonomous support agent (Fin-equivalent) and agent-facing Copilot: ingestion → hybrid retrieval → orchestrated generation with guardrails, actions and procedures, a resolution/billing definition, and an eval loop — designed as a worker-tier subsystem, not a separate platform._
 
-Companion docs: RFC-001 (runs in the `ai.*` worker queues; provider resilience posture), RFC-002 (§5.5 owns the storage), RFC-000 (Aide roadmap per phase).
+Companion docs: RFC-001 (runs in the `ai.*` worker queues; provider resilience posture), RFC-002 (§5.5 owns the storage), RFC-000 (Neko roadmap per phase).
 
 ## 1. Context & problem
 
-Aide must (a) resolve a majority of eligible inbound conversations without a human, (b) never dead-end a customer, (c) stay strictly inside each tenant's knowledge and policy boundary, and (d) make money at ≈$0.99/resolution pricing. The engineering problem is less "call an LLM" than: retrieval quality, orchestration under multi-second latencies, tenant isolation, injection-resistant tool use, and **measurement** — you cannot sell a resolution rate you cannot measure.
+Neko must (a) resolve a majority of eligible inbound conversations without a human, (b) never dead-end a customer, (c) stay strictly inside each tenant's knowledge and policy boundary, and (d) make money at ≈$0.99/resolution pricing. The engineering problem is less "call an LLM" than: retrieval quality, orchestration under multi-second latencies, tenant isolation, injection-resistant tool use, and **measurement** — you cannot sell a resolution rate you cannot measure.
 
 Treat LLM providers as slow, flaky, expensive, rate-limited dependencies (RFC-001 §9 posture) and design the subsystem so a model outage degrades to "a human answers," never to silence.
 
@@ -19,7 +19,7 @@ Treat LLM providers as slow, flaky, expensive, rate-limited dependencies (RFC-00
 
 ## 3. Architecture overview
 
-Aide is **stateless orchestration code in the worker tier** over state in Postgres/Redis — no separate "AI platform" service (RFC-001 §6.1 rationale; the module seam exists if it ever earns independence).
+Neko is **stateless orchestration code in the worker tier** over state in Postgres/Redis — no separate "AI platform" service (RFC-001 §6.1 rationale; the module seam exists if it ever earns independence).
 
 ```mermaid
 flowchart TB
@@ -63,14 +63,14 @@ Every turn writes an `agent_runs` row (retrieved chunk ids + scores, prompts has
 - **Grounding gate:** if fused retrieval confidence is low → ask **one** clarifying question (tracked; never loops) or hand off. This single gate is the difference between "helpful" and "confidently wrong," and it is tunable per tenant (conservative ↔ eager).
 - **Actions** = admin-defined HTTP tools (OpenAPI-ish schema: method, URL template, auth ref, input/output schema, PII flags). Execution: through the SSRF-guard proxy (RFC-001 §10), per-action rate limits, idempotency keys on mutating calls, dry-run test console for admins, response allowlisted into context (schema-validated — a tool response is untrusted input).
 - **Procedures** = versioned, declarative multi-step policies ("refund if: order < 30 days AND …") compiled into a constrained plan the orchestrator walks step-by-step — the model fills slots and drafts messages; **the ledger, not the model, owns control flow** (steps recorded like workflow runs, RFC-002 §5.6). This is how multi-step stays auditable and replay-safe.
-- **Handoff:** always available ("talk to a person" honored immediately); on handoff Aide posts a private summary note (conversation recap, attempted sources, customer sentiment) so the human starts warm. If workflows route post-handoff, RFC-001 §6.7 takes over.
+- **Handoff:** always available ("talk to a person" honored immediately); on handoff Neko posts a private summary note (conversation recap, attempted sources, customer sentiment) so the human starts warm. If workflows route post-handoff, RFC-001 §6.7 takes over.
 
 ## 6. Safety & tenant isolation
 
 - **Injection posture:** retrieved content and customer text are data, never instructions — delimited and typed in the prompt; system policy holds instruction hierarchy; tool calls only from the allowlist with schema-validated args; generation must cite retrieved chunk ids, and the verifier rejects claims with no supporting chunk (groundedness check on a cheap model). Red-team suite (injection corpus incl. "ignore previous instructions" families, tool-exfiltration attempts, cross-tenant probes) runs in CI.
 - **Isolation:** retrieval queries run under the same RLS + `app.ws` regime as everything else (RFC-002 §7) — the model can never be prompted into another tenant's corpus because the SQL layer cannot return it.
 - **Output filters:** PII redaction option per tenant; policy filters (no legal/medical advice beyond sources, configurable); profanity/abuse de-escalation path routes to humans.
-- **Kill switches:** per-workspace Aide disable; global model-route flag; per-action disable — all Unleash flags, no deploy needed.
+- **Kill switches:** per-workspace Neko disable; global model-route flag; per-action disable — all Unleash flags, no deploy needed.
 
 ## 7. Copilot (agent-facing) & voice (forward pointer)
 
@@ -78,19 +78,19 @@ Copilot reuses the identical retrieval + `agent_runs` machinery with a different
 
 ## 8. Measurement: resolutions, analytics, evals
 
-- **Resolution definition (billing-grade, decided now):** a conversation counts as an Aide resolution iff Aide participated, no human teammate replied after Aide's last answer, the customer confirmed resolution **or** went silent for 72 h after the answer, **and** the conversation was not reopened within 72 h. Reopens claw back the meter (usage_records are appended, corrections are negative rows — never mutated; RFC-002 W8).
-- **Analytics (per tenant):** resolution & deflection rate, handoff reasons, CSAT delta (Aide-touched vs not), latency, cost; **content gaps** = unresolved/handoff turns clustered by embedding (HDBSCAN over `agent_runs` embeddings, weekly batch) surfaced as "write an article about X" suggestions — this closes the retrieval-quality flywheel.
+- **Resolution definition (billing-grade, decided now):** a conversation counts as an Neko resolution iff Neko participated, no human teammate replied after Neko's last answer, the customer confirmed resolution **or** went silent for 72 h after the answer, **and** the conversation was not reopened within 72 h. Reopens claw back the meter (usage_records are appended, corrections are negative rows — never mutated; RFC-002 W8).
+- **Analytics (per tenant):** resolution & deflection rate, handoff reasons, CSAT delta (Neko-touched vs not), latency, cost; **content gaps** = unresolved/handoff turns clustered by embedding (HDBSCAN over `agent_runs` embeddings, weekly batch) surfaced as "write an article about X" suggestions — this closes the retrieval-quality flywheel.
 - **Evals (the release gate for any prompt/model/retrieval change):**
   - *Golden sets:* per-tenant opt-in sampled transcripts + synthetic sets per vertical; graded by LLM-judge on groundedness/correctness/tone with human spot-audit calibration (κ tracked).
   - *Offline in CI:* retrieval recall@k on labeled corpora; end-to-end judge scores; injection red-team suite; cost/latency regression budgets.
-  - *Online:* shadow mode (Aide drafts silently on real traffic, judged offline) before enable per tenant; then A/B vs control cohort; auto-halt flag if resolution or CSAT degrades > X% (symptom alert, RFC-001 §9).
+  - *Online:* shadow mode (Neko drafts silently on real traffic, judged offline) before enable per tenant; then A/B vs control cohort; auto-halt flag if resolution or CSAT degrades > X% (symptom alert, RFC-001 §9).
 - **Debuggability:** every production answer reconstructs from `agent_runs` (chunks, prompt hash, model, seed where supported) — support can answer "why did it say that?"
 
 ## 9. Cost model & unit economics
 
-Per typical resolved conversation (2 Aide turns): preflight ≈1k tok cheap model + retrieval embeds (≈negligible, cached) + generation ≈2×(3k in / 400 out) mid/frontier tier + verification ≈1.5k cheap ⇒ **$0.01–0.05 model cost** at mid-2026 street prices (sensitive assumption; re-price quarterly). At $0.99/resolution ⇒ gross margin > 90% on inference; the real costs are eval infra and re-embeds (bounded, batch, off-peak). Controls: model tiering (cheap for preflight/verify, frontier for generation only), semantic cache per workspace for near-duplicate questions (embedding-similarity keyed, TTL + invalidated on knowledge change), context trimming (only top chunks + rolling conversation summary), per-tenant token budgets + monthly spend caps (429 with human-routing fallback, never silent drop), provider abstraction with per-provider rate-limit pools and failover (RFC-001 §9 table).
+Per typical resolved conversation (2 Neko turns): preflight ≈1k tok cheap model + retrieval embeds (≈negligible, cached) + generation ≈2×(3k in / 400 out) mid/frontier tier + verification ≈1.5k cheap ⇒ **$0.01–0.05 model cost** at mid-2026 street prices (sensitive assumption; re-price quarterly). At $0.99/resolution ⇒ gross margin > 90% on inference; the real costs are eval infra and re-embeds (bounded, batch, off-peak). Controls: model tiering (cheap for preflight/verify, frontier for generation only), semantic cache per workspace for near-duplicate questions (embedding-similarity keyed, TTL + invalidated on knowledge change), context trimming (only top chunks + rolling conversation summary), per-tenant token budgets + monthly spend caps (429 with human-routing fallback, never silent drop), provider abstraction with per-provider rate-limit pools and failover (RFC-001 §9 table).
 
-At 1.5M Aide conversations/mo envelope: ≈$25–75k/mo inference against ≈$400k+ metered revenue if resolution ≥ 40% — the margin funds the eval discipline that protects it.
+At 1.5M Neko conversations/mo envelope: ≈$25–75k/mo inference against ≈$400k+ metered revenue if resolution ≥ 40% — the margin funds the eval discipline that protects it.
 
 ## 10. Risks & open questions
 
