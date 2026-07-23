@@ -8,6 +8,7 @@ Ordered, copy-paste prompts that drive a coding agent (Claude Code or similar) t
 | `phase-1-ai-automation.md` | Months 4–6 | Sellable MVP: Aide (AI agent), workflows, SLAs, outbound v1 |
 | `phase-2-omnichannel-platform.md` | Months 7–12 | WhatsApp/Meta/SMS, tickets, Series, Copilot, Actions, apps, SSO |
 | `phase-3-scale-enterprise.md` | Months 13–18 | Voice, procedures/evals, EU cell, conditional scale graduations |
+| `team-split.md` | Phases 1–3 | Two-developer parallel assignment: tracks, sync points, interface contracts |
 
 ## How to use
 
