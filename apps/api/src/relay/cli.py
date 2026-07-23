@@ -9,6 +9,8 @@
 - ``relay help-center-revalidate`` — run the Help Center ISR revalidation consumer (P0.8):
                                consumes the outbox Redis stream and POSTs affected paths to the
                                hosted site's on-demand revalidation webhook.
+- ``relay reporting-metrics`` — run the reporting-metrics consumer (P0.9): consumes the outbox
+                               Redis stream and projects per-conversation metrics.
 """
 
 from __future__ import annotations
@@ -47,6 +49,13 @@ def _help_center_revalidate() -> int:
     return 0
 
 
+def _reporting_metrics() -> int:
+    from relay.modules.reporting.consumer import main as run_metrics
+
+    run_metrics()
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="relay")
     sub = parser.add_subparsers(dest="command", required=True)
@@ -55,6 +64,9 @@ def main(argv: list[str] | None = None) -> int:
     sub.add_parser("realtime-fanout", help="Run the realtime-fanout consumer (outbox → Centrifugo)")
     sub.add_parser(
         "help-center-revalidate", help="Run the Help Center ISR revalidation consumer (P0.8)"
+    )
+    sub.add_parser(
+        "reporting-metrics", help="Run the reporting-metrics consumer (outbox → metrics)"
     )
 
     args = parser.parse_args(argv)
@@ -66,6 +78,8 @@ def main(argv: list[str] | None = None) -> int:
         return _realtime_fanout()
     if args.command == "help-center-revalidate":
         return _help_center_revalidate()
+    if args.command == "reporting-metrics":
+        return _reporting_metrics()
     parser.error(f"unknown command {args.command!r}")
     return 2
 

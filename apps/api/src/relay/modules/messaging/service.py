@@ -138,6 +138,9 @@ def _conversation_payload(c: Conversation) -> dict[str, Any]:
         "state": c.state,
         "assignee_id": encode_public_id(IdPrefix.ADMIN, c.assignee_id) if c.assignee_id else None,
         "team_id": encode_public_id(IdPrefix.TEAM, c.team_id) if c.team_id else None,
+        # Occurrence time of the event (ISO-8601). Consumers that must time a state change without
+        # the part row (reporting P0.9) read this; realtime fan-out ignores it (RFC-001 §6.5).
+        "occurred_at": _now().isoformat(),
     }
 
 
@@ -149,6 +152,10 @@ def _part_payload(c: Conversation, p: ConversationPart) -> dict[str, Any]:
         author_kind=p.author_kind,
         created_at=p.created_at.isoformat(),
     )
+    # Surface the CSAT score on the rating part so reporting can meter it off the event alone
+    # (never scanning conversation_parts — P0.9 acceptance).
+    if p.part_type == "rating":
+        payload["rating"] = p.meta.get("rating")
     return payload
 
 
@@ -1072,3 +1079,33 @@ async def contact_realtime_token(
         workspace_id=conv.workspace_id, contact_id=conv.contact_id, conversation_id=conv.id
     )
     return schemas.RealtimeTokenOut(token=token, ws_url=get_settings().centrifugo_ws_url)
+
+
+# --- Cross-module read: queue snapshot for the reporting queue monitor (P0.9) -------------------
+
+
+async def queue_snapshot(session: AsyncSession) -> dict[str, int | None]:
+    """Live inbox counts for the P0.9 queue monitor, computed from the conversation **head** only
+    (never ``conversation_parts``). RLS scopes every count to the caller's workspace. Exposed on the
+    service boundary so ``reporting`` reads these without importing messaging's models."""
+    open_count = (
+        await session.execute(
+            select(sa.func.count()).select_from(Conversation).where(Conversation.state == "open")
+        )
+    ).scalar_one()
+    unassigned = (
+        await session.execute(
+            select(sa.func.count())
+            .select_from(Conversation)
+            .where(Conversation.state == "open", Conversation.assignee_id.is_(None))
+        )
+    ).scalar_one()
+    oldest_waiting = (
+        await session.execute(
+            select(sa.func.min(Conversation.waiting_since)).where(Conversation.state == "open")
+        )
+    ).scalar_one()
+    longest_wait_s = (
+        int((_now() - oldest_waiting).total_seconds()) if oldest_waiting is not None else None
+    )
+    return {"open": open_count, "unassigned": unassigned, "longest_wait_s": longest_wait_s}

@@ -50,6 +50,7 @@ celery_app.conf.update(
         "relay.modules.crm.tasks",
         "relay.modules.messaging.tasks",
         "relay.modules.billing.tasks",
+        "relay.modules.reporting.tasks",
     ],
 )
 
@@ -91,6 +92,13 @@ celery_app.conf.beat_schedule = {
         "task": "billing.sync_seats_to_stripe",
         "schedule": 300.0,  # every 5 minutes
         "options": {"queue": "housekeeping"},
+    },
+    # Recompute reporting daily rollups (today + yesterday) hourly, so the volume/CSAT reports
+    # track through the day and catch late closes/ratings (P0.9, RFC-000 §2.9). Idempotent.
+    "reporting-daily-rollups": {
+        "task": "reporting.compute_daily_rollups",
+        "schedule": crontab(minute="0"),  # top of every hour
+        "options": {"queue": "analytics"},
     },
 }
 
