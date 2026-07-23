@@ -315,8 +315,14 @@ async def create_conversation(
     return conversation_out(conv)
 
 
-def _encode_cursor(c: Conversation) -> str:
-    ts = c.waiting_since.isoformat() if c.waiting_since is not None else ""
+_UNSET: Any = object()  # sentinel: "argument not supplied" (distinct from a real ``None`` ts)
+
+
+def _encode_cursor(c: Conversation, key: dt.datetime | None = _UNSET) -> str:
+    """Encode a keyset cursor as ``<iso-ts>|<public-id>``. ``key`` defaults to ``waiting_since``
+    (the R1 order key); pass ``last_part_at`` for the contact-scoped ordering."""
+    ts_value = c.waiting_since if key is _UNSET else key
+    ts = ts_value.isoformat() if ts_value is not None else ""
     return f"{ts}|{encode_public_id(IdPrefix.CONVERSATION, c.id)}"
 
 
@@ -332,6 +338,7 @@ async def list_conversations(
     state: str = "open",
     team_id: str | None = None,
     assignee_id: str | None = None,
+    unassigned: bool = False,
     cursor: str | None = None,
     limit: int | None = None,
 ) -> Page[schemas.ConversationOut]:
@@ -340,12 +347,17 @@ async def list_conversations(
     The base query (no cursor) is exactly the RFC-002 §6 R1 shape and is served by the partial
     index ``conv_open_team`` / ``conv_open_asgn`` (Index Scan, no Sort — proven by an EXPLAIN
     test). Keyset pagination adds ``id`` as a tiebreak and walks NULL-``waiting_since`` rows last.
+
+    ``unassigned=True`` powers the P0.5 "Unassigned" view (``assignee_id IS NULL``); it is
+    mutually exclusive with ``assignee_id`` (a conversation cannot be both).
     """
     n = clamp_limit(limit)
     stmt = select(Conversation).where(Conversation.state == state)
     if team_id is not None:
         stmt = stmt.where(Conversation.team_id == _decode_or_404(IdPrefix.TEAM, team_id, "team"))
-    if assignee_id is not None:
+    if unassigned:
+        stmt = stmt.where(Conversation.assignee_id.is_(None))
+    elif assignee_id is not None:
         stmt = stmt.where(
             Conversation.assignee_id == _decode_or_404(IdPrefix.ADMIN, assignee_id, "assignee")
         )
@@ -369,6 +381,47 @@ async def list_conversations(
     if len(convs) > n:
         convs = convs[:n]
         next_cursor = _encode_cursor(convs[-1])
+    return Page(items=[conversation_out(c) for c in convs], next_cursor=next_cursor)
+
+
+async def list_conversations_for_contact(
+    session: AsyncSession,
+    contact_public_id: str,
+    *,
+    cursor: str | None = None,
+    limit: int | None = None,
+) -> Page[schemas.ConversationOut]:
+    """A contact's recent conversations across all states — the P0.5 contact side panel.
+
+    Ordered newest-activity-first (``last_part_at`` desc, ``id`` desc tiebreak); keyset
+    paginated. RLS scopes rows to the caller's workspace, so a bad contact id simply yields an
+    empty page rather than leaking another tenant's threads.
+    """
+    # Verify the contact belongs to the caller's workspace via the crm service (the only
+    # sanctioned cross-module channel, RFC-001 §6.2) so an unknown/other-tenant id 404s rather
+    # than silently returning an empty page.
+    from relay.modules.crm import service as crm_service
+
+    n = clamp_limit(limit)
+    await crm_service.get_contact(session, contact_public_id)  # 404 if not in this workspace
+    cid = _decode_or_404(IdPrefix.CONTACT, contact_public_id, "contact")
+    stmt = select(Conversation).where(Conversation.contact_id == cid)
+    stmt = stmt.order_by(Conversation.last_part_at.desc(), Conversation.id.desc())
+    if cursor:
+        lpa, i = _decode_cursor(cursor)
+        if lpa is not None:
+            stmt = stmt.where(
+                sa.or_(
+                    Conversation.last_part_at < lpa,
+                    sa.and_(Conversation.last_part_at == lpa, Conversation.id < i),
+                )
+            )
+    convs = list((await session.scalars(stmt.limit(n + 1))).all())
+    next_cursor = None
+    if len(convs) > n:
+        convs = convs[:n]
+        last = convs[-1]
+        next_cursor = _encode_cursor(last, key=last.last_part_at)
     return Page(items=[conversation_out(c) for c in convs], next_cursor=next_cursor)
 
 

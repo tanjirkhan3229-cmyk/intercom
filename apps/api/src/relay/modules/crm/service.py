@@ -35,7 +35,7 @@ from relay.core.rbac import Role, authorize
 from relay.core.redis import get_redis
 
 from . import schemas
-from .models import AttributeDefinition, Company, Contact, ContactCompany
+from .models import AttributeDefinition, Company, Contact, ContactCompany, Event
 
 # Redis keys for the event firehose buffer (RFC-002 §5.4 W3).
 EVENTS_BUFFER_PREFIX = "events:buffer:"
@@ -327,6 +327,36 @@ async def _get_contact(session: AsyncSession, contact_id: uuid.UUID) -> Contact:
 async def get_contact(session: AsyncSession, public_id: str) -> schemas.ContactOut:
     cid = _decode_or_404(IdPrefix.CONTACT, public_id, "contact")
     return contact_out(await _get_contact(session, cid))
+
+
+async def list_recent_events(
+    session: AsyncSession, contact_public_id: str, *, limit: int | None = None
+) -> list[schemas.EventOut]:
+    """Most-recent tracked events for a contact — the inbox contact side panel's activity feed.
+
+    A bounded newest-first read (not a hot keyset path): the panel shows the latest slice only.
+    RLS forces the query into the caller's workspace, and the BRIN/partition layout on
+    ``created_at`` keeps the ``ORDER BY created_at DESC LIMIT n`` cheap.
+    """
+    cid = _decode_or_404(IdPrefix.CONTACT, contact_public_id, "contact")
+    await _get_contact(session, cid)  # 404 (RLS-scoped) for an unknown/other-tenant contact
+    n = clamp_limit(limit)
+    stmt = (
+        select(Event)
+        .where(Event.contact_id == cid)
+        .order_by(Event.created_at.desc(), Event.id.desc())
+        .limit(n)
+    )
+    rows = list((await session.scalars(stmt)).all())
+    return [
+        schemas.EventOut(
+            name=e.name,
+            contact_id=contact_public_id,
+            properties=e.properties,
+            created_at=e.created_at,
+        )
+        for e in rows
+    ]
 
 
 async def list_contacts(
