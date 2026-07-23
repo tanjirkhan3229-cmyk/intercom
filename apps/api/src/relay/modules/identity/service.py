@@ -17,6 +17,7 @@ from typing import Any
 from sqlalchemy import func, select, text, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from relay.core.api_key import API_KEY_LABEL
 from relay.core.db import session_scope, set_workspace_guc
 from relay.core.errors import AuthenticationError, ConflictError, NotFoundError
 from relay.core.ids import IdPrefix, decode_public_id, encode_public_id
@@ -35,7 +36,6 @@ from .principal import Principal
 from .rbac import Role, authorize
 
 REFRESH_SEPARATOR = "."
-API_KEY_LABEL = "relaysk"
 
 
 def _now() -> dt.datetime:

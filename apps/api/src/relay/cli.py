@@ -63,6 +63,13 @@ def _reporting_metrics() -> int:
     return 0
 
 
+def _webhook_dispatch() -> int:
+    from relay.modules.webhooks.consumer import main as run_dispatch
+
+    run_dispatch()
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="relay")
     sub = parser.add_subparsers(dest="command", required=True)
@@ -78,6 +85,9 @@ def main(argv: list[str] | None = None) -> int:
     sub.add_parser(
         "reporting-metrics", help="Run the reporting-metrics consumer (outbox → metrics)"
     )
+    sub.add_parser(
+        "webhook-dispatch", help="Run the webhook dispatch consumer (outbox → webhook deliveries)"
+    )
 
     args = parser.parse_args(argv)
     if args.command == "openapi":
@@ -92,6 +102,8 @@ def main(argv: list[str] | None = None) -> int:
         return _channels_dispatch()
     if args.command == "reporting-metrics":
         return _reporting_metrics()
+    if args.command == "webhook-dispatch":
+        return _webhook_dispatch()
     parser.error(f"unknown command {args.command!r}")
     return 2
 

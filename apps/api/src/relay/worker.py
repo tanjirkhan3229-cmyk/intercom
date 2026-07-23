@@ -52,6 +52,7 @@ celery_app.conf.update(
         "relay.modules.billing.tasks",
         "relay.modules.channels.tasks",
         "relay.modules.reporting.tasks",
+        "relay.modules.webhooks.tasks",
     ],
 )
 
@@ -106,6 +107,23 @@ celery_app.conf.beat_schedule = {
         "task": "reporting.compute_daily_rollups",
         "schedule": crontab(minute="0"),  # top of every hour
         "options": {"queue": "analytics"},
+    },
+    # Re-enqueue due webhook retries + manual redeliveries (P0.11 durable retry ledger).
+    "webhooks-scan-retries": {
+        "task": "webhooks.scan_retries",
+        "schedule": 30.0,  # seconds
+        "options": {"queue": "housekeeping"},
+    },
+    # Keep webhook_deliveries partitions ahead + drop those past the 30-day retention window.
+    "webhooks-ensure-partitions": {
+        "task": "webhooks.ensure_partitions",
+        "schedule": crontab(hour="3", minute="20"),  # daily 03:20
+        "options": {"queue": "housekeeping"},
+    },
+    "webhooks-purge-deliveries": {
+        "task": "webhooks.purge_deliveries",
+        "schedule": crontab(hour="3", minute="25"),  # daily 03:25
+        "options": {"queue": "housekeeping"},
     },
 }
 

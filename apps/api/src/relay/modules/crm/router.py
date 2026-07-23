@@ -7,9 +7,10 @@ are keyset-paginated (``relay.core.pagination.Page``).
 
 from __future__ import annotations
 
-from fastapi import APIRouter, Query, Response, status
+from fastapi import APIRouter, Query, Request, Response, status
 
 from relay.core.deps import CurrentPrincipal, SessionDep
+from relay.core.idempotency import idempotent
 from relay.core.pagination import Page
 
 from . import schemas, service
@@ -21,15 +22,23 @@ router = APIRouter(tags=["crm"])
 
 
 @router.post("/contacts/identify", response_model=schemas.ContactOut)
+@idempotent(status_code=200)
 async def identify(
-    req: schemas.ContactIdentify, principal: CurrentPrincipal, session: SessionDep
+    req: schemas.ContactIdentify,
+    request: Request,
+    principal: CurrentPrincipal,
+    session: SessionDep,
 ) -> schemas.ContactOut:
     return await service.identify(session, principal, req)
 
 
 @router.post("/contacts", response_model=schemas.ContactOut, status_code=201)
+@idempotent(status_code=201)
 async def create_contact(
-    req: schemas.ContactCreate, principal: CurrentPrincipal, session: SessionDep
+    req: schemas.ContactCreate,
+    request: Request,
+    principal: CurrentPrincipal,
+    session: SessionDep,
 ) -> schemas.ContactOut:
     return await service.create_contact(session, principal, req)
 
@@ -187,8 +196,12 @@ async def delete_attribute_definition(
 
 
 @router.post("/events/track", response_model=schemas.TrackResponse, status_code=202)
+@idempotent(status_code=202)
 async def track_events(
-    req: schemas.TrackRequest, principal: CurrentPrincipal, session: SessionDep
+    req: schemas.TrackRequest,
+    request: Request,
+    principal: CurrentPrincipal,
+    session: SessionDep,
 ) -> schemas.TrackResponse:
     accepted = await service.track_events(session, principal, req)
     return schemas.TrackResponse(accepted=accepted)

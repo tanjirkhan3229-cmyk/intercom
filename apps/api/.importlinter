@@ -28,6 +28,7 @@ modules =
     relay.modules.reporting
     relay.modules.platform
     relay.modules.billing
+    relay.modules.webhooks
 # Allowed cross-module channels: another module's public service interface + its events.
 ignore_imports =
     relay.modules.** -> relay.modules.*.service

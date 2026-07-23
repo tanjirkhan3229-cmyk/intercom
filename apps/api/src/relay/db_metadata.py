@@ -25,5 +25,6 @@ from relay.modules.outbound import models as _outbound  # noqa: F401
 from relay.modules.platform import models as _platform  # noqa: F401
 from relay.modules.reporting import models as _reporting  # noqa: F401
 from relay.modules.tickets import models as _tickets  # noqa: F401
+from relay.modules.webhooks import models as _webhooks  # noqa: F401
 
 target_metadata = Base.metadata
