@@ -1,8 +1,8 @@
 """channels: email adapter — verified domains, channel accounts, email ledger, suppressions,
               delivery events + inbound dedupe/DLQ infra + SECURITY DEFINER routing resolvers
 
-Revision ID: 0006_channels
-Revises: 0005_merge_billing_knowledge
+Revision ID: 0007_channels
+Revises: 0006_reporting
 Create Date: 2026-07-23
 
 RFC-002 §5.6 (channel tables) + RFC-001 §6.6 (email topology) + P0.7.
@@ -38,8 +38,8 @@ from sqlalchemy.dialects import postgresql as pg
 
 from relay.core.rls import create_tenant_table
 
-revision: str = "0006_channels"
-down_revision: str | None = "0005_merge_billing_knowledge"
+revision: str = "0007_channels"
+down_revision: str | None = "0006_reporting"
 branch_labels: str | Sequence[str] | None = None
 depends_on: str | Sequence[str] | None = None
 

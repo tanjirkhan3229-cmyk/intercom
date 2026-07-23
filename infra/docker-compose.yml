@@ -251,6 +251,20 @@ services:
       redis-broker:
         condition: service_healthy
 
+  reporting-metrics:
+    # Consumes `relay:outbox` and projects per-conversation metrics into `conversation_metrics`
+    # (P0.9, RFC-000 §2.9). Independent consumer group; single-instance for ordered idempotent folds.
+    build:
+      context: ..
+      dockerfile: apps/api/Dockerfile
+    environment: *api-env
+    command: ["relay", "reporting-metrics"]
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis-cache:
+        condition: service_healthy
+
 volumes:
   pgdata:
   brokerdata:
