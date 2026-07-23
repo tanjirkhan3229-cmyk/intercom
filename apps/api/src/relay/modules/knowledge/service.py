@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import datetime as dt
 import uuid
+from typing import Any
 
 import sqlalchemy as sa
 from sqlalchemy import func, select
@@ -34,9 +35,9 @@ from relay.core.principal import Principal
 from relay.core.rbac import Role, authorize
 from relay.modules.identity import service as identity_service
 
-from . import events, schemas
+from . import events, indexing, retrieval, schemas
 from .blocks import blocks_to_text, excerpt, slugify
-from .models import Article, Collection, HelpCenter
+from .models import Article, Collection, ExternalSource, HelpCenter
 
 
 def _now() -> dt.datetime:
@@ -680,3 +681,194 @@ async def public_list_articles(
         for a in articles
     ]
     return Page(items=items, next_cursor=next_cursor)
+
+
+# --- Knowledge Hub: external sources (admin, P1.1) ----------------------------
+
+
+def source_out(s: ExternalSource) -> schemas.SourceOut:
+    return schemas.SourceOut(
+        id=encode_public_id(IdPrefix.EXTERNAL_SOURCE, s.id),
+        kind=s.kind,
+        title=s.title,
+        status=s.status,
+        config=s.config,
+        locale=s.locale,
+        audience=s.audience,
+        document_count=s.document_count,
+        chunk_count=s.chunk_count,
+        last_synced_at=s.last_synced_at,
+        last_error=s.last_error,
+        created_at=s.created_at,
+        updated_at=s.updated_at,
+    )
+
+
+async def _get_source(session: AsyncSession, source_id: uuid.UUID) -> ExternalSource:
+    source = await session.get(ExternalSource, source_id)
+    if source is None:  # RLS scopes to the workspace, so another tenant's id is a clean 404
+        raise NotFoundError("source not found")
+    return source
+
+
+def _validate_source_config(kind: str, config: dict[str, Any]) -> None:
+    """Reject a config that the sync would choke on later (fail at write time, not mid-crawl)."""
+    if kind == "url" and not str(config.get("url", "")).startswith(("http://", "https://")):
+        raise ConflictError("url source requires config.url (http/https)")
+    if kind == "pdf" and not config.get("s3_key"):
+        raise ConflictError("pdf source requires config.s3_key")
+    if kind == "snippet" and not str(config.get("body", "")).strip():
+        raise ConflictError("snippet source requires a non-empty config.body")
+
+
+async def create_source(
+    session: AsyncSession, principal: Principal, req: schemas.SourceCreate
+) -> schemas.SourceOut:
+    authorize(principal, min_role=Role.ADMIN)
+    _validate_source_config(req.kind, req.config)
+    source = ExternalSource(
+        id=uuid7(),
+        workspace_id=principal.workspace_id,
+        kind=req.kind,
+        title=req.title,
+        status="pending",
+        config=req.config,
+        locale=req.locale,
+        audience=req.audience,
+    )
+    session.add(source)
+    await session.flush()
+    return source_out(source)
+
+
+async def list_sources(session: AsyncSession) -> list[schemas.SourceOut]:
+    sources = (
+        await session.scalars(select(ExternalSource).order_by(ExternalSource.created_at.desc()))
+    ).all()
+    return [source_out(s) for s in sources]
+
+
+async def get_source(session: AsyncSession, public_id: str) -> schemas.SourceOut:
+    sid = _decode_or_404(IdPrefix.EXTERNAL_SOURCE, public_id, "source")
+    return source_out(await _get_source(session, sid))
+
+
+async def update_source(
+    session: AsyncSession, principal: Principal, public_id: str, req: schemas.SourceUpdate
+) -> schemas.SourceOut:
+    authorize(principal, min_role=Role.ADMIN)
+    sid = _decode_or_404(IdPrefix.EXTERNAL_SOURCE, public_id, "source")
+    source = await _get_source(session, sid)
+    if req.title is not None:
+        source.title = req.title
+    if req.config is not None:
+        _validate_source_config(source.kind, req.config)
+        source.config = req.config
+    if req.locale is not None:
+        source.locale = req.locale
+    if req.audience is not None:
+        source.audience = req.audience
+    await session.flush()
+    return source_out(source)
+
+
+async def delete_source(session: AsyncSession, principal: Principal, public_id: str) -> None:
+    authorize(principal, min_role=Role.ADMIN)
+    sid = _decode_or_404(IdPrefix.EXTERNAL_SOURCE, public_id, "source")
+    source = await _get_source(session, sid)
+    await indexing.delete_source_chunks(
+        session, workspace_id=principal.workspace_id, source_kind=source.kind, source_id=source.id
+    )
+    await session.delete(source)
+
+
+async def sync_source(
+    session: AsyncSession, principal: Principal, public_id: str
+) -> schemas.SourceOut:
+    """Enqueue an async (re-)sync + index of the source (RFC-001 §9: never crawl in the request
+    path). The task marks the source ``syncing`` then ``synced``/``error`` as it runs."""
+    authorize(principal, min_role=Role.ADMIN)
+    sid = _decode_or_404(IdPrefix.EXTERNAL_SOURCE, public_id, "source")
+    source = await _get_source(session, sid)
+    from relay.worker import celery_app
+
+    celery_app.send_task(
+        "knowledge.sync_source",
+        args=[str(principal.workspace_id), str(source.id)],
+        queue="ai.batch",
+    )
+    return source_out(source)
+
+
+# --- Knowledge Hub: retrieval (admin/agent debug + the internal contract for Neko, P1.1) ------
+
+
+async def retrieve_chunks(
+    session: AsyncSession,
+    *,
+    workspace_id: uuid.UUID,
+    query: str,
+    locale: str = "en",
+    k: int | None = None,
+    method: retrieval.RetrievalMethod = "hybrid",
+    source_kinds: list[str] | None = None,
+    ef_search: int | None = None,
+) -> list[retrieval.RetrievedChunk]:
+    """The cross-module retrieval contract (Neko/copilot call this, RFC-003 §4). RLS-scoped."""
+    return await retrieval.retrieve(
+        session,
+        workspace_id=workspace_id,
+        query=query,
+        locale=locale,
+        k=k,
+        method=method,
+        source_kinds=source_kinds,
+        ef_search=ef_search,
+    )
+
+
+def _chunk_out(c: retrieval.RetrievedChunk) -> schemas.RetrievedChunkOut:
+    prefix = IdPrefix.ARTICLE if c.source_kind == "article" else IdPrefix.EXTERNAL_SOURCE
+    return schemas.RetrievedChunkOut(
+        source_id=encode_public_id(prefix, c.source_id),
+        source_kind=c.source_kind,
+        title=c.title,
+        heading_path=c.heading_path,
+        content=c.content,
+        score=c.score,
+    )
+
+
+async def search_knowledge(
+    session: AsyncSession, principal: Principal, req: schemas.RetrievalRequest
+) -> schemas.RetrievalResponse:
+    """Admin/agent-facing retrieval debug endpoint (the "why did it retrieve that?" surface)."""
+    authorize(principal, min_role=Role.AGENT)
+    chunks = await retrieve_chunks(
+        session,
+        workspace_id=principal.workspace_id,
+        query=req.query,
+        locale=req.locale,
+        k=req.k,
+        method=req.method,
+        source_kinds=req.source_kinds,
+        ef_search=req.ef_search,
+    )
+    return schemas.RetrievalResponse(
+        query=req.query, method=req.method, results=[_chunk_out(c) for c in chunks]
+    )
+
+
+async def reembed(
+    session: AsyncSession, principal: Principal, req: schemas.ReembedRequest
+) -> dict[str, int | str]:
+    """Enqueue a dual-version re-embed with atomic per-workspace cutover (RFC-003 §4)."""
+    authorize(principal, min_role=Role.ADMIN)
+    from relay.worker import celery_app
+
+    celery_app.send_task(
+        "knowledge.reembed_workspace",
+        args=[str(principal.workspace_id), req.new_version],
+        queue="ai.batch",
+    )
+    return {"status": "queued", "new_version": req.new_version}

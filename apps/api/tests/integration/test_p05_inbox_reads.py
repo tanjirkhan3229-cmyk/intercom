@@ -100,9 +100,7 @@ async def test_contact_conversations_all_states_newest_first(client: httpx.Async
     )
     assert closed.status_code == 200, closed.text
 
-    page = (
-        await client.get(f"/v0/contacts/{contact_id}/conversations", headers=_auth(tok))
-    ).json()
+    page = (await client.get(f"/v0/contacts/{contact_id}/conversations", headers=_auth(tok))).json()
     ids = [c["id"] for c in page["items"]]
     assert set(ids) == {first["id"], second["id"]}
     # newest activity first: the just-closed `first` has the most recent last_part_at.
@@ -129,9 +127,7 @@ async def test_contact_events_read_back(client: httpx.AsyncClient) -> None:
     assert r.status_code == 202, r.text
     drain_events()  # synchronous drain: Redis buffer → COPY → partitioned events table
 
-    events = (
-        await client.get(f"/v0/contacts/{contact_id}/events", headers=_auth(tok))
-    ).json()
+    events = (await client.get(f"/v0/contacts/{contact_id}/events", headers=_auth(tok))).json()
     assert any(e["name"] == "signed_up" and e["properties"].get("plan") == "pro" for e in events)
 
 

@@ -14,6 +14,8 @@ import type {
   Part,
   SavedReply,
   Session,
+  Source,
+  SourceInput,
   Tag,
   Team,
   TokenResponse,
@@ -254,5 +256,19 @@ export class RelayApi {
       method: "PATCH",
       body: input,
     });
+  }
+
+  // --- Knowledge Hub: external sources (P1.1) ---------------------------------
+  listSources(): Promise<Source[]> {
+    return this.client.request<Source[]>("/v0/sources");
+  }
+  createSource(input: SourceInput): Promise<Source> {
+    return this.client.request<Source>("/v0/sources", { method: "POST", body: input });
+  }
+  syncSource(id: string): Promise<Source> {
+    return this.client.request<Source>(`/v0/sources/${id}/sync`, { method: "POST" });
+  }
+  deleteSource(id: string): Promise<void> {
+    return this.client.request<void>(`/v0/sources/${id}`, { method: "DELETE" });
   }
 }

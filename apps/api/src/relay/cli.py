@@ -63,6 +63,13 @@ def _reporting_metrics() -> int:
     return 0
 
 
+def _knowledge_indexing() -> int:
+    from relay.modules.knowledge.indexing_consumer import main as run_indexing
+
+    run_indexing()
+    return 0
+
+
 def _webhook_dispatch() -> int:
     from relay.modules.webhooks.consumer import main as run_dispatch
 
@@ -86,6 +93,10 @@ def main(argv: list[str] | None = None) -> int:
         "reporting-metrics", help="Run the reporting-metrics consumer (outbox → metrics)"
     )
     sub.add_parser(
+        "knowledge-indexing",
+        help="Run the knowledge-indexing consumer (outbox → re-index tasks)",
+    )
+    sub.add_parser(
         "webhook-dispatch", help="Run the webhook dispatch consumer (outbox → webhook deliveries)"
     )
 
@@ -102,6 +113,8 @@ def main(argv: list[str] | None = None) -> int:
         return _channels_dispatch()
     if args.command == "reporting-metrics":
         return _reporting_metrics()
+    if args.command == "knowledge-indexing":
+        return _knowledge_indexing()
     if args.command == "webhook-dispatch":
         return _webhook_dispatch()
     parser.error(f"unknown command {args.command!r}")

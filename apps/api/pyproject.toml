@@ -23,6 +23,7 @@ dependencies = [
     "orjson>=3.10",
     "tenacity>=9.0",                 # bounded + jittered retries
     "boto3>=1.35",                   # S3/MinIO
+    "pypdf>=5.1",                    # PDF text extraction (P1.1 knowledge sources)
     # --- Observability (P0.12, RFC-001 §9/§13) ---
     "prometheus-client>=0.21",       # golden-signal metrics + /metrics exposition
     "sentry-sdk>=2.20",              # error tracking (Starlette/FastAPI/Celery integrations)
