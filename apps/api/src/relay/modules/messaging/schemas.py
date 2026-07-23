@@ -114,3 +114,32 @@ class TagIn(BaseModel):
 
 class TagOut(BaseModel):
     name: str
+
+
+# --- Realtime (Centrifugo tokens + typing) ------------------------------------
+
+
+class RealtimeTokenOut(BaseModel):
+    """An agent's Centrifugo connection token + the websocket URL to dial."""
+
+    token: str
+    ws_url: str
+
+
+class SubscribeIn(BaseModel):
+    """Request per-channel subscription tokens. Each channel is authorised against the caller's
+    workspace before a token is minted (``conv:*`` must belong to the workspace; ``inbox:{ws}:*``
+    must carry the caller's own workspace id)."""
+
+    channels: list[str] = Field(min_length=1, max_length=100)
+
+
+class SubscribeOut(BaseModel):
+    tokens: dict[str, str]
+    ws_url: str
+
+
+class TypingIn(BaseModel):
+    """A no-body typing ping is fine; the actor is the authenticated agent."""
+
+    typing: bool = True
