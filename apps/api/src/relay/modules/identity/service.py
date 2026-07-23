@@ -14,7 +14,7 @@ import uuid
 from dataclasses import dataclass
 from typing import Any
 
-from sqlalchemy import select, text, update
+from sqlalchemy import func, select, text, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from relay.core.db import session_scope, set_workspace_guc
@@ -484,6 +484,26 @@ async def list_members(session: AsyncSession) -> list[schemas.MembershipOut]:
     ]
 
 
+async def count_active_memberships(session: AsyncSession, workspace_id: uuid.UUID) -> int:
+    """Active-seat count for billing (RFC-002 §5.6): memberships whose admin account is
+    active. Read-only cross-module helper — the ``service`` surface billing consults instead
+    of importing ``identity.models`` directly (import-linter boundary rule)."""
+    count = await session.scalar(
+        select(func.count())
+        .select_from(Membership)
+        .join(Admin, Admin.id == Membership.admin_id)
+        .where(Membership.workspace_id == workspace_id, Admin.is_active.is_(True))
+    )
+    return count or 0
+
+
+async def get_admin_email(session: AsyncSession, admin_id: uuid.UUID) -> str:
+    admin = await session.get(Admin, admin_id)
+    if admin is None:
+        raise NotFoundError("admin not found")
+    return admin.email
+
+
 async def invite_member(
     session: AsyncSession, principal: Principal, req: schemas.InviteRequest
 ) -> schemas.MembershipOut:
@@ -501,6 +521,12 @@ async def invite_member(
     membership = Membership(workspace_id=principal.workspace_id, admin_id=admin.id, role=req.role)
     session.add(membership)
     await session.flush()
+    # Seat sync (RFC-002 §5.6): keep the local seat count current for the next Stripe push.
+    # Deliberate reverse-direction service import (identity -> billing), allowed by the
+    # import-linter boundary rule (any module -> any module's `service`).
+    from relay.modules.billing import service as billing_service
+
+    await billing_service.recalculate_seats(session, principal.workspace_id)
     return schemas.MembershipOut(
         id=encode_public_id(IdPrefix.MEMBERSHIP, membership.id),
         admin=admin_out(admin),
@@ -537,6 +563,9 @@ async def remove_member(
         raise NotFoundError("membership not found")
     await session.delete(membership)
     await session.flush()
+    from relay.modules.billing import service as billing_service
+
+    await billing_service.recalculate_seats(session, principal.workspace_id)
 
 
 # --- Teams --------------------------------------------------------------------

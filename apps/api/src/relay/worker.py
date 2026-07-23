@@ -46,7 +46,11 @@ celery_app.conf.update(
     broker_connection_retry_on_startup=True,
     result_expires=3600,
     # Feature modules register their task modules here as they land.
-    include=["relay.modules.crm.tasks", "relay.modules.messaging.tasks"],
+    include=[
+        "relay.modules.crm.tasks",
+        "relay.modules.messaging.tasks",
+        "relay.modules.billing.tasks",
+    ],
 )
 
 # Durable timers / periodic housekeeping (RFC-001 §6.4, the `beat` runtime shape).
@@ -73,6 +77,19 @@ celery_app.conf.beat_schedule = {
     "messaging-purge-idempotency": {
         "task": "messaging.purge_idempotency_keys",
         "schedule": crontab(hour="3", minute="10"),  # daily 03:10
+        "options": {"queue": "housekeeping"},
+    },
+    # Seat counting (RFC-002 §5.6, P0.10): daily full reconciliation + a tight poll that
+    # pushes only dirty rows to Stripe, so an on-change seat add reflects within minutes
+    # without ever calling Stripe from the request path.
+    "billing-recalculate-all-seats": {
+        "task": "billing.recalculate_all_seats",
+        "schedule": crontab(hour="3", minute="15"),  # daily 03:15
+        "options": {"queue": "housekeeping"},
+    },
+    "billing-sync-seats-to-stripe": {
+        "task": "billing.sync_seats_to_stripe",
+        "schedule": 300.0,  # every 5 minutes
         "options": {"queue": "housekeeping"},
     },
 }

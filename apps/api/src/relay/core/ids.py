@@ -109,3 +109,5 @@ class IdPrefix:
     SAVED_REPLY = "rep"
     ARTICLE = "art"
     COLLECTION = "col"
+    PLAN = "pln"
+    SUBSCRIPTION = "sub"
