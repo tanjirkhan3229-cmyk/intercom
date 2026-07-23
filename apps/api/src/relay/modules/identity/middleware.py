@@ -20,16 +20,20 @@ from starlette.requests import Request
 from starlette.responses import Response
 
 from relay.core.context import admin_id_var, role_var, workspace_id_var
-from relay.core.security import decode_access_token
+from relay.core.principal import ContactPrincipal
+from relay.core.security import decode_access_token, decode_widget_session_token
 
 from .principal import Principal
 
 
-def _authenticate(request: Request) -> Principal | None:
+def _bearer(request: Request) -> str | None:
     header = request.headers.get("Authorization")
     if not header or not header.lower().startswith("bearer "):
         return None
-    token = header[7:].strip()
+    return header[7:].strip()
+
+
+def _authenticate(token: str) -> Principal | None:
     try:
         claims = decode_access_token(token)
         return Principal(
@@ -41,22 +45,42 @@ def _authenticate(request: Request) -> Principal | None:
         return None
 
 
+def _authenticate_contact(token: str) -> ContactPrincipal | None:
+    """A widget end-user (contact/lead) session token. Disjoint from agent tokens by ``type``."""
+    try:
+        claims = decode_widget_session_token(token)
+        return ContactPrincipal(
+            workspace_id=uuid.UUID(claims["ws"]),
+            contact_id=uuid.UUID(claims["sub"]),
+        )
+    except (jwt.PyJWTError, KeyError, ValueError):
+        return None
+
+
 class TenancyMiddleware(BaseHTTPMiddleware):
     async def dispatch(
         self, request: Request, call_next: Callable[[Request], Awaitable[Response]]
     ) -> Response:
-        principal = _authenticate(request)
+        token = _bearer(request)
+        principal = _authenticate(token) if token else None
+        # A single bearer token is one audience or the other, never both.
+        contact = _authenticate_contact(token) if (token and principal is None) else None
         request.state.principal = principal
+        request.state.widget = contact
 
         tokens: list[Token[Any]] = []
         if principal is not None:
             tokens.append(workspace_id_var.set(principal.workspace_id))
             tokens.append(admin_id_var.set(principal.admin_id))
             tokens.append(role_var.set(principal.role))
+        elif contact is not None:
+            tokens.append(workspace_id_var.set(contact.workspace_id))
         try:
             return await call_next(request)
         finally:
             if principal is not None:
                 role_var.reset(tokens[2])
                 admin_id_var.reset(tokens[1])
+                workspace_id_var.reset(tokens[0])
+            elif contact is not None:
                 workspace_id_var.reset(tokens[0])

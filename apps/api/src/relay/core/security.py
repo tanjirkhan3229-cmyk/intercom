@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import datetime as dt
 import hashlib
+import hmac
 import secrets
 import uuid
 from typing import Any
@@ -24,6 +25,7 @@ _hasher = PasswordHasher()
 
 JWT_ALGORITHM = "HS256"
 ACCESS_TOKEN_TYPE = "access"
+WIDGET_SESSION_TYPE = "widget"
 
 
 # --- Passwords ----------------------------------------------------------------
@@ -99,3 +101,55 @@ def decode_access_token(token: str) -> dict[str, Any]:
     if payload.get("type") != ACCESS_TOKEN_TYPE:
         raise jwt.InvalidTokenError("wrong token type")
     return payload
+
+
+# --- Widget (end-user/contact) session JWTs -----------------------------------
+
+
+def create_widget_session_token(
+    *, contact_id: uuid.UUID, workspace_id: uuid.UUID, now: dt.datetime | None = None
+) -> str:
+    """A widget contact's session JWT. Longer-lived than an agent access token (a lead keeps
+    its session across visits) but low-privilege: it only ever authorises the contact's own
+    conversations, and RLS scopes every read to ``ws``. Signed with ``jwt_signing_key``; the
+    ``type`` claim keeps it disjoint from agent access tokens."""
+    settings = get_settings()
+    issued = now or dt.datetime.now(dt.UTC)
+    expires = issued + dt.timedelta(seconds=settings.widget_session_ttl_seconds)
+    payload: dict[str, Any] = {
+        "sub": str(contact_id),
+        "ws": str(workspace_id),
+        "type": WIDGET_SESSION_TYPE,
+        "iat": int(issued.timestamp()),
+        "exp": int(expires.timestamp()),
+        "jti": uuid.uuid4().hex,
+    }
+    return jwt.encode(payload, settings.jwt_signing_key, algorithm=JWT_ALGORITHM)
+
+
+def decode_widget_session_token(token: str) -> dict[str, Any]:
+    """Decode + validate a widget session token. Raises ``jwt.PyJWTError`` on any problem."""
+    settings = get_settings()
+    payload: dict[str, Any] = jwt.decode(
+        token,
+        settings.jwt_signing_key,
+        algorithms=[JWT_ALGORITHM],
+        options={"require": ["exp", "iat", "sub", "ws"]},
+    )
+    if payload.get("type") != WIDGET_SESSION_TYPE:
+        raise jwt.InvalidTokenError("wrong token type")
+    return payload
+
+
+# --- Messenger identity verification (HMAC, RFC-001 §10) ----------------------
+
+
+def compute_identity_hash(secret: str, external_id: str) -> str:
+    """HMAC-SHA256 of the tenant's own user id under the per-workspace secret — the value the
+    customer's backend computes and passes to ``relay('boot', { user_hash })``."""
+    return hmac.new(secret.encode("utf-8"), external_id.encode("utf-8"), hashlib.sha256).hexdigest()
+
+
+def verify_identity_hash(secret: str, external_id: str, user_hash: str) -> bool:
+    """Constant-time compare of a client-supplied ``user_hash`` against the expected HMAC."""
+    return hmac.compare_digest(compute_identity_hash(secret, external_id), user_hash)

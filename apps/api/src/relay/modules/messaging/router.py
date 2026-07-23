@@ -8,15 +8,27 @@ creates exactly one row (RFC-002 §7). List endpoints are keyset-paginated.
 
 from __future__ import annotations
 
+import uuid
+
 from fastapi import APIRouter, Query, Request, Response, status
 
-from relay.core.deps import CurrentPrincipal, SessionDep
+from relay.core.db import session_scope
+from relay.core.deps import ContactSession, CurrentPrincipal, SessionDep
+from relay.core.errors import NotFoundError
 from relay.core.idempotency import idempotent
+from relay.core.ids import IdPrefix, decode_public_id
 from relay.core.pagination import Page
+from relay.settings import get_settings
 
 from . import schemas, service
 
 router = APIRouter(tags=["messaging"])
+
+# httpOnly cookie carrying the widget session token, so a lead's session survives a reload
+# (RFC-001 §10 acceptance). Cross-site iframe ⇒ SameSite=None; Secure. Path=/v0 so it rides
+# every widget API call. ponytail: third-party-cookie-blocked browsers fall back to the
+# `resume_token` the iframe stores in its own storage — the cookie is the primary path.
+WIDGET_SESSION_COOKIE = "relay_widget"
 
 
 # --- Conversations ------------------------------------------------------------
@@ -269,3 +281,130 @@ async def typing(
     """Relay a typing indicator to the conversation channel (ephemeral: Redis TTL + Centrifugo)."""
     await service.relay_typing(session, principal, conversation_id)
     return Response(status_code=status.HTTP_204_NO_CONTENT)
+
+
+# --- Widget (messenger) BFF — end-user/contact surface (RFC-000 §2.1, RFC-001 §6.3) ----------
+#
+# ``/widget/boot`` is unauthenticated: it resolves the workspace from the public ``app_id`` and
+# scopes RLS to it itself (a contact session doesn't exist yet). Every other widget route runs
+# as a ``ContactSession`` (a contact/lead JWT) and can only ever touch that contact's own
+# conversations. Mutations carry ``@idempotent`` (public retries must not double-send).
+
+
+def _workspace_from_app_id(app_id: str) -> uuid.UUID:
+    try:
+        return decode_public_id(IdPrefix.WORKSPACE, app_id)
+    except ValueError as exc:
+        raise NotFoundError("workspace not found") from exc
+
+
+@router.post("/widget/boot", response_model=schemas.WidgetBootResponse)
+async def widget_boot(
+    req: schemas.WidgetBootRequest, request: Request, response: Response
+) -> schemas.WidgetBootResponse:
+    """Boot a messenger session: verify identity (HMAC) or resume/create a cookie-scoped lead,
+    then return a session token + public config + the contact's conversations."""
+    workspace_id = _workspace_from_app_id(req.app_id)
+    cookie_token = request.cookies.get(WIDGET_SESSION_COOKIE)
+    async with session_scope(workspace_id) as session:
+        result = await service.widget_boot(
+            session, workspace_id=workspace_id, req=req, cookie_token=cookie_token
+        )
+    response.set_cookie(
+        key=WIDGET_SESSION_COOKIE,
+        value=result.session_token,
+        max_age=get_settings().widget_session_ttl_seconds,
+        httponly=True,
+        secure=True,
+        samesite="none",
+        path="/v0",
+    )
+    return result
+
+
+@router.get("/widget/conversations", response_model=Page[schemas.ConversationOut])
+async def widget_list_conversations(
+    contact: ContactSession,
+    session: SessionDep,
+    cursor: str | None = None,
+    limit: int | None = Query(default=None, ge=1, le=200),
+) -> Page[schemas.ConversationOut]:
+    return await service.contact_list_conversations(session, contact, cursor=cursor, limit=limit)
+
+
+@router.post("/widget/conversations", response_model=schemas.ConversationOut, status_code=201)
+@idempotent(status_code=201)
+async def widget_start_conversation(
+    req: schemas.WidgetStartConversation,
+    request: Request,
+    principal: ContactSession,
+    session: SessionDep,
+) -> schemas.ConversationOut:
+    return await service.contact_start_conversation(session, principal, req)
+
+
+@router.get("/widget/conversations/{conversation_id}/parts", response_model=Page[schemas.PartOut])
+async def widget_list_parts(
+    conversation_id: str,
+    contact: ContactSession,
+    session: SessionDep,
+    cursor: str | None = None,
+    after: str | None = Query(
+        default=None,
+        description="Realtime long-poll fallback: parts newer than this part id, ascending.",
+    ),
+    limit: int | None = Query(default=None, ge=1, le=200),
+) -> Page[schemas.PartOut]:
+    return await service.contact_list_parts(
+        session, contact, conversation_id, after=after, cursor=cursor, limit=limit
+    )
+
+
+@router.post(
+    "/widget/conversations/{conversation_id}/reply",
+    response_model=schemas.PartOut,
+    status_code=201,
+)
+@idempotent(status_code=201)
+async def widget_reply(
+    conversation_id: str,
+    req: schemas.WidgetReplyIn,
+    request: Request,
+    principal: ContactSession,
+    session: SessionDep,
+) -> schemas.PartOut:
+    return await service.contact_reply(session, principal, conversation_id, req)
+
+
+@router.post(
+    "/widget/conversations/{conversation_id}/rating",
+    response_model=schemas.PartOut,
+    status_code=201,
+)
+@idempotent(status_code=201)
+async def widget_rating(
+    conversation_id: str,
+    req: schemas.WidgetRatingIn,
+    request: Request,
+    principal: ContactSession,
+    session: SessionDep,
+) -> schemas.PartOut:
+    return await service.contact_rate(session, principal, conversation_id, req)
+
+
+@router.post("/widget/conversations/{conversation_id}/typing", status_code=204)
+async def widget_typing(
+    conversation_id: str, contact: ContactSession, session: SessionDep
+) -> Response:
+    await service.contact_typing(session, contact, conversation_id)
+    return Response(status_code=status.HTTP_204_NO_CONTENT)
+
+
+@router.post(
+    "/widget/conversations/{conversation_id}/realtime-token",
+    response_model=schemas.RealtimeTokenOut,
+)
+async def widget_realtime_token(
+    conversation_id: str, contact: ContactSession, session: SessionDep
+) -> schemas.RealtimeTokenOut:
+    return await service.contact_realtime_token(session, contact, conversation_id)

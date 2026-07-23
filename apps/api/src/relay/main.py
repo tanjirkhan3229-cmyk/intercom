@@ -11,6 +11,7 @@ from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
+from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import ORJSONResponse
 
 from relay import __version__, health
@@ -41,10 +42,22 @@ def create_app() -> FastAPI:
         lifespan=lifespan,
     )
 
-    # Middleware runs outermost-first; add_middleware stacks in reverse, so
-    # RequestContextMiddleware (added last) wraps TenancyMiddleware.
+    # Middleware runs outermost-first; add_middleware stacks in reverse, so the last one added
+    # wraps the earlier ones. CORS must be outermost to answer preflight before auth runs.
     app.add_middleware(TenancyMiddleware)
     app.add_middleware(RequestContextMiddleware)
+    # The messenger widget embeds on any customer origin and the agent app runs on its own
+    # domain — both call this API cross-origin, and the widget lead cookie needs credentialed
+    # requests (so a wildcard origin won't do; we reflect the request origin instead).
+    # ponytail: per-workspace origin allow-listing is the P1 hardening; egress here is a
+    # low-privilege lead cookie + Bearer-token agent auth, so reflect-all is acceptable for now.
+    app.add_middleware(
+        CORSMiddleware,
+        allow_origin_regex=".*",
+        allow_credentials=True,
+        allow_methods=["GET", "POST", "PATCH", "DELETE", "OPTIONS"],
+        allow_headers=["Authorization", "Content-Type", "Idempotency-Key"],
+    )
     register_exception_handlers(app)
 
     # System + hello-world.

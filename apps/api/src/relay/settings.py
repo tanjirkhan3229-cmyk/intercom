@@ -54,6 +54,9 @@ class Settings(BaseSettings):
     )
     access_token_ttl_seconds: int = 900  # 15 minutes
     refresh_token_ttl_seconds: int = 60 * 60 * 24 * 30  # 30 days
+    # Widget contact/lead session (RFC-001 §10): long-lived so a lead's cookie survives visits,
+    # but low-privilege (own conversations only). Rotation/refresh can tighten this later.
+    widget_session_ttl_seconds: int = 60 * 60 * 24 * 30  # 30 days
 
     # --- Google OIDC (optional) ---
     google_oidc_client_id: str | None = None
