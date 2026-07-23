@@ -307,6 +307,25 @@ services:
       redis-broker:
         condition: service_healthy
 
+  ai-dispatch:
+    # Consumes `relay:outbox` and enqueues `ai.run_turn` on the `ai.interactive` queue for each
+    # customer message (P1.2). Never runs the turn inline — the provider-bound work runs on the
+    # worker fleet's ai.interactive bulkhead. Single-instance stream drainer (its own group).
+    build:
+      context: ..
+      dockerfile: apps/api/Dockerfile
+    environment: *api-env
+    command: ["relay", "ai-dispatch"]
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+      postgres:
+        condition: service_healthy
+      redis-cache:
+        condition: service_healthy
+      redis-broker:
+        condition: service_healthy
+
 volumes:
   pgdata:
   brokerdata:

@@ -168,6 +168,49 @@ class Settings(BaseSettings):
     source_fetch_timeout_seconds: float = 15.0
     source_max_document_bytes: int = 10 * 1024 * 1024
 
+    # --- Neko AI orchestrator (P1.2, RFC-003 §3/§5/§6/§9, RFC-001 §6.4/§9) ---
+    # Kill switches (RFC-003 §6). ``ai_global_enabled`` is the global on/off; ``ai_model_route`` is
+    # the global model-route flag: ``auto`` (declared failover order), a provider name to pin, or
+    # ``off`` (route every turn to humans). Settings bools, runtime-toggled like realtime_fallback
+    # (Unleash graduates them in P1.3; one flag doesn't justify the dependency yet).
+    ai_global_enabled: bool = True
+    ai_model_route: Literal["auto", "primary", "secondary", "off"] = "auto"
+
+    # Provider abstraction + failover (RFC-003 §9). ``deterministic`` is the hermetic dev/test/CI
+    # model; prod sets e.g. ``["primary", "secondary"]`` and the ai_primary_* / ai_secondary_*
+    # HTTP creds below. Order IS the failover order.
+    ai_provider_order: list[str] = Field(default_factory=lambda: ["deterministic"])
+    ai_primary_api_base: str | None = None
+    ai_primary_api_key: str | None = None
+    ai_secondary_api_base: str | None = None
+    ai_secondary_api_key: str | None = None
+    # Model tiering (RFC-003 §9): cheap tier = preflight/rewrite/verify; frontier tier = generation.
+    # Model *tags* here; a change is a config flip (prompts versioned + eval-gated per provider).
+    ai_cheap_model: str = "relay-cheap-v1"
+    ai_frontier_model: str = "relay-frontier-v1"
+    # Per-provider rate-limit pool (concurrency cap). Per-*workspace* capping is the ai.interactive
+    # Celery concurrency cap (RFC-001 §6.4), not re-done in-process.
+    ai_provider_concurrency: int = 8
+    # Per-provider circuit breaker (RFC-001 §9): open after N failures, cooldown seconds.
+    ai_breaker_threshold: int = 4
+    ai_breaker_cooldown_seconds: float = 15.0
+
+    # Timeout budgets per stage (RFC-003 §5: every edge has a timeout). Preflight is the tight one.
+    ai_preflight_timeout_seconds: float = 0.4  # cheap model, ≤400 ms (RFC-003 §3)
+    ai_rewrite_timeout_seconds: float = 1.0
+    ai_generate_timeout_seconds: float = 15.0
+    ai_verify_timeout_seconds: float = 3.0
+    # First streamed token target (RFC-003 §5 acceptance p95 < 3 s) — the stream failover budget.
+    ai_first_token_timeout_seconds: float = 3.0
+    # Hard per-turn wall-clock cap (RFC-003 §5: total turn budget 20 s).
+    ai_turn_budget_seconds: float = 20.0
+
+    # Retrieval + grounding gate (RFC-003 §4-5). Default grounding floor; per-workspace overrides in
+    # ``ai_settings.grounding_threshold`` (the conservative↔eager slider, P1.3).
+    ai_retrieval_k: int = 8
+    ai_grounding_threshold_default: float = 0.08
+    ai_answer_max_tokens: int = 400
+
     # --- Public API (P0.11, RFC-001 §10) ---
     # Per-workspace token bucket applied ONLY to API-key traffic (the first-party agent app uses
     # JWTs and is never rate-limited here). ``capacity`` = burst; ``refill`` = tokens/sec. Tests

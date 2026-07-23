@@ -20,6 +20,7 @@ from relay.core.logging import configure_logging, get_logger
 from relay.core.middleware import RequestContextMiddleware
 from relay.core.observability import MetricsMiddleware, init_app_observability
 from relay.core.public_api import PublicApiMiddleware
+from relay.modules.ai.router import router as ai_router
 from relay.modules.billing.router import router as billing_router
 from relay.modules.channels.router import router as channels_router
 from relay.modules.crm.router import router as crm_router
@@ -93,6 +94,7 @@ def create_app() -> FastAPI:
     app.include_router(channels_router, prefix="/v0")
     app.include_router(reporting_router, prefix="/v0")
     app.include_router(webhooks_router, prefix="/v0")
+    app.include_router(ai_router, prefix="/v0")
 
     # Sentry + OTel tracing + FastAPI instrumentation (all no-ops unless configured — RFC-001 §9).
     init_app_observability(app)
