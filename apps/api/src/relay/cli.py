@@ -6,6 +6,9 @@
                                at-least-once (LISTEN/NOTIFY-woken, poll fallback). One per deploy.
 - ``relay realtime-fanout``  — run the realtime-fanout consumer (RFC-001 §6.3): consumes the
                                outbox Redis stream and publishes conversation events to Centrifugo.
+- ``relay help-center-revalidate`` — run the Help Center ISR revalidation consumer (P0.8):
+                               consumes the outbox Redis stream and POSTs affected paths to the
+                               hosted site's on-demand revalidation webhook.
 """
 
 from __future__ import annotations
@@ -37,12 +40,22 @@ def _realtime_fanout() -> int:
     return 0
 
 
+def _help_center_revalidate() -> int:
+    from relay.modules.knowledge.revalidation import main as run_revalidation
+
+    run_revalidation()
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="relay")
     sub = parser.add_subparsers(dest="command", required=True)
     sub.add_parser("openapi", help="Print the OpenAPI spec to stdout")
     sub.add_parser("outbox-relay", help="Run the transactional-outbox relay")
     sub.add_parser("realtime-fanout", help="Run the realtime-fanout consumer (outbox → Centrifugo)")
+    sub.add_parser(
+        "help-center-revalidate", help="Run the Help Center ISR revalidation consumer (P0.8)"
+    )
 
     args = parser.parse_args(argv)
     if args.command == "openapi":
@@ -51,6 +64,8 @@ def main(argv: list[str] | None = None) -> int:
         return _outbox_relay()
     if args.command == "realtime-fanout":
         return _realtime_fanout()
+    if args.command == "help-center-revalidate":
+        return _help_center_revalidate()
     parser.error(f"unknown command {args.command!r}")
     return 2
 

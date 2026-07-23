@@ -401,6 +401,40 @@ async def get_workspace(session: AsyncSession, workspace_id: uuid.UUID) -> Works
     return ws
 
 
+@dataclass
+class WorkspaceRef:
+    """A minimal, cross-module-safe view of a workspace (id + routing slug + name).
+
+    Returned to other modules (e.g. ``knowledge`` resolving a public Help Center slug) so they
+    never import ``identity``'s ORM models — only this ``service`` interface.
+    """
+
+    id: uuid.UUID
+    name: str
+    slug: str
+
+
+async def get_workspace_by_slug(session: AsyncSession, slug: str) -> WorkspaceRef | None:
+    """Resolve a workspace by its (globally unique, citext) slug — a pre-tenancy lookup.
+
+    ``workspaces`` is a global table with no RLS, so this is safe to call before ``app.ws`` is
+    set. Used by the public Help Center to map a subdomain slug to a workspace, after which the
+    caller sets the RLS GUC and reads tenant content.
+    """
+    ws = await session.scalar(select(Workspace).where(Workspace.slug == slug))
+    if ws is None:
+        return None
+    return WorkspaceRef(id=ws.id, name=ws.name, slug=ws.slug)
+
+
+async def get_workspace_ref(session: AsyncSession, workspace_id: uuid.UUID) -> WorkspaceRef | None:
+    """Like :func:`get_workspace` but returns the cross-module-safe ``WorkspaceRef`` (or None)."""
+    ws = await session.get(Workspace, workspace_id)
+    if ws is None:
+        return None
+    return WorkspaceRef(id=ws.id, name=ws.name, slug=ws.slug)
+
+
 @dataclass(frozen=True)
 class WidgetSettings:
     """Public workspace facts the messenger widget boots with. The ``messenger`` blob is the raw

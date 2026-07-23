@@ -1,9 +1,16 @@
 import { RelayClient, RelayApiError } from "@relay/sdk-ts";
 import type { Page } from "@relay/shared";
 import type {
+  Article,
+  ArticleInput,
+  ArticleSummary,
+  Collection,
+  CollectionInput,
   Conversation,
   Contact,
   ContactEvent,
+  HelpCenterConfig,
+  HelpCenterInput,
   Part,
   SavedReply,
   Session,
@@ -186,6 +193,66 @@ export class RelayApi {
     return this.client.request<void>(`/v0/conversations/${id}/typing`, {
       method: "POST",
       body: { typing: true },
+    });
+  }
+
+  // --- Help Center: collections (knowledge, P0.8) -----------------------------
+  listCollections(): Promise<Collection[]> {
+    return this.client.request<Collection[]>("/v0/collections");
+  }
+  createCollection(input: CollectionInput): Promise<Collection> {
+    return this.client.request<Collection>("/v0/collections", { method: "POST", body: input });
+  }
+  updateCollection(id: string, input: CollectionInput): Promise<Collection> {
+    return this.client.request<Collection>(`/v0/collections/${id}`, {
+      method: "PATCH",
+      body: input,
+    });
+  }
+  deleteCollection(id: string): Promise<void> {
+    return this.client.request<void>(`/v0/collections/${id}`, { method: "DELETE" });
+  }
+
+  // --- Help Center: articles --------------------------------------------------
+  listArticles(
+    params: { status?: string; collectionId?: string; cursor?: string; limit?: number } = {},
+  ): Promise<Page<ArticleSummary>> {
+    return this.client.request<Page<ArticleSummary>>("/v0/articles", {
+      query: {
+        status: params.status,
+        collection_id: params.collectionId,
+        cursor: params.cursor,
+        limit: params.limit,
+      },
+    });
+  }
+  getArticle(id: string): Promise<Article> {
+    return this.client.request<Article>(`/v0/articles/${id}`);
+  }
+  createArticle(input: ArticleInput): Promise<Article> {
+    return this.client.request<Article>("/v0/articles", { method: "POST", body: input });
+  }
+  updateArticle(id: string, input: ArticleInput): Promise<Article> {
+    return this.client.request<Article>(`/v0/articles/${id}`, { method: "PATCH", body: input });
+  }
+  deleteArticle(id: string): Promise<void> {
+    return this.client.request<void>(`/v0/articles/${id}`, { method: "DELETE" });
+  }
+  publishArticle(id: string): Promise<Article> {
+    return this.client.request<Article>(`/v0/articles/${id}/publish`, { method: "POST" });
+  }
+  unpublishArticle(id: string): Promise<Article> {
+    return this.client.request<Article>(`/v0/articles/${id}/unpublish`, { method: "POST" });
+  }
+
+  // --- Help Center: config ----------------------------------------------------
+  getHelpCenter(): Promise<HelpCenterConfig> {
+    return this.client.request<HelpCenterConfig>("/v0/help-center");
+  }
+  updateHelpCenter(input: HelpCenterInput): Promise<HelpCenterConfig> {
+    return this.client.request<HelpCenterConfig>("/v0/help-center", {
+      method: "PATCH",
+      body: input,
     });
   }
 }

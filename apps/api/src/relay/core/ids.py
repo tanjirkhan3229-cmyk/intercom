@@ -108,3 +108,4 @@ class IdPrefix:
     PART = "msg"
     SAVED_REPLY = "rep"
     ARTICLE = "art"
+    COLLECTION = "col"
