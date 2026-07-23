@@ -32,11 +32,17 @@ def configure_logging() -> None:
     settings = get_settings()
     level = getattr(logging, settings.log_level.upper(), logging.INFO)
 
+    # Imported lazily: the observability package imports back into this module for its logger, so a
+    # top-level import here would be a cycle (get_logger isn't defined yet at import time).
+    from relay.core.observability.scrub import scrub_processor
+
     shared_processors: list[structlog.typing.Processor] = [
         structlog.contextvars.merge_contextvars,
         structlog.processors.add_log_level,
         structlog.processors.TimeStamper(fmt="iso", utc=True),
         _inject_context,
+        # PII scrub runs after context is merged, before rendering (RFC-001 §10).
+        scrub_processor,
         structlog.processors.StackInfoRenderer(),
         structlog.processors.format_exc_info,
     ]

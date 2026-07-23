@@ -80,6 +80,14 @@ async def emit(
         .where(OutboxMessage.aggregate_id == aggregate_id)
         .scalar_subquery()
     )
+    # Trace correlation (RFC-001 §6.5): carry the active W3C trace context so the relay's publish
+    # span links back to this request. A no-op with no active span (tracing off) — the carrier is
+    # empty, so the payload is left byte-for-byte unchanged. Imported lazily to keep the
+    # observability stack out of migration-time model loading.
+    from relay.core.observability.tracing import TRACE_CARRIER_KEY, inject_trace_context
+
+    carrier = inject_trace_context()
+    final_payload = {**payload, TRACE_CARRIER_KEY: carrier} if carrier else payload
     await session.execute(
         sa.insert(OutboxMessage).values(
             id=uuid7(),
@@ -87,7 +95,7 @@ async def emit(
             aggregate_id=aggregate_id,
             seq=next_seq,
             topic=topic,
-            payload=payload,
+            payload=final_payload,
         )
     )
     # Wake the relay immediately; the notification fires on commit (poll is the fallback).

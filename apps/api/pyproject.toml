@@ -23,6 +23,16 @@ dependencies = [
     "orjson>=3.10",
     "tenacity>=9.0",                 # bounded + jittered retries
     "boto3>=1.35",                   # S3/MinIO
+    # --- Observability (P0.12, RFC-001 §9/§13) ---
+    "prometheus-client>=0.21",       # golden-signal metrics + /metrics exposition
+    "sentry-sdk>=2.20",              # error tracking (Starlette/FastAPI/Celery integrations)
+    "opentelemetry-sdk>=1.29",       # tracing SDK
+    "opentelemetry-exporter-otlp-proto-http>=1.29",   # OTLP/HTTP span exporter (no native grpc dep)
+    "opentelemetry-instrumentation-fastapi>=0.50b0",
+    "opentelemetry-instrumentation-sqlalchemy>=0.50b0",
+    "opentelemetry-instrumentation-celery>=0.50b0",
+    "opentelemetry-instrumentation-httpx>=0.50b0",
+    "opentelemetry-instrumentation-redis>=0.50b0",
 ]
 
 [project.scripts]
@@ -45,6 +55,7 @@ dev = [
     "testcontainers[postgres,redis]>=4.8",
     "httpx>=0.28",
     "types-boto3>=1.35",
+    "pip-audit>=2.7",                # dependency vulnerability audit (P0.12 security pass)
 ]
 
 # ---------------------------------------------------------------------------
@@ -75,6 +86,12 @@ explicit_package_bases = true
 
 [[tool.mypy.overrides]]
 module = ["testcontainers.*", "celery.*", "kombu.*"]
+ignore_missing_imports = true
+
+# OpenTelemetry instrumentation packages ship partial/no type stubs; the SDK/API are typed but
+# the instrumentation wrappers are not. Don't let strict mode reject them.
+[[tool.mypy.overrides]]
+module = ["opentelemetry.instrumentation.*"]
 ignore_missing_imports = true
 
 [tool.pytest.ini_options]

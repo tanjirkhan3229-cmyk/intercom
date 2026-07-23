@@ -159,6 +159,27 @@ class Settings(BaseSettings):
     # private/loopback/link-local/metadata IPs. Tests/dev set True to allow a localhost receiver.
     webhook_allow_private_targets: bool = False
 
+    # --- Observability (P0.12, RFC-001 §9/§13) ---
+    # Prometheus: the `app` serves /metrics; the non-HTTP shapes (worker/beat/relay/fanout) start a
+    # scrape server on ``metrics_port``. In prod set ``PROMETHEUS_MULTIPROC_DIR`` so the
+    # prefork/uvicorn children share one series set; unset → single-process registry (dev/tests).
+    metrics_enabled: bool = True
+    metrics_port: int = 9100
+    # OpenTelemetry tracing is OFF unless an OTLP endpoint is configured — a no-op in dev/tests, so
+    # no collector is required. When on, traces correlate request → outbox → worker (RFC-001 §6.5).
+    otel_exporter_otlp_endpoint: str | None = None
+    otel_service_name: str = "relay"
+    otel_traces_sampler_ratio: float = 1.0
+    # Sentry error tracking — OFF unless a DSN is set. ``deploy_sha`` doubles as the Sentry release
+    # and the Prometheus build-info / deploy-marker label (RFC-001 §13 canary deploy markers).
+    sentry_dsn: str | None = None
+    sentry_traces_sample_rate: float = 0.0
+    deploy_sha: str = "unknown"
+
+    @property
+    def otel_enabled(self) -> bool:
+        return bool(self.otel_exporter_otlp_endpoint)
+
     @property
     def database_url_psycopg(self) -> str:
         """Plain (driverless) DSN for raw psycopg use in sync Celery tasks (e.g. the events
