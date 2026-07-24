@@ -46,8 +46,10 @@ def test_widget_token_pinned_to_its_own_conversation() -> None:
 
     conv_a_channel = realtime.conv_channel(encode_public_id(IdPrefix.CONVERSATION, conv_a))
     conv_b_channel = realtime.conv_channel(encode_public_id(IdPrefix.CONVERSATION, conv_b))
-    # The allow-list is exactly its own conversation — Centrifugo refuses anything else.
-    assert claims["channels"] == [conv_a_channel]
+    contact_feed = realtime.contact_channel(encode_public_id(IdPrefix.CONTACT, contact_id))
+    # The allow-list is exactly its own conversation + its own contact feed (P1.8 in-app posts);
+    # Centrifugo refuses anything else — notably another conversation.
+    assert claims["channels"] == [conv_a_channel, contact_feed]
     assert conv_b_channel not in claims["channels"]
     assert claims["info"]["kind"] == "contact"
 

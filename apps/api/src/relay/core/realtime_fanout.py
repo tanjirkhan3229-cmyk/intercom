@@ -39,6 +39,7 @@ log = get_logger(__name__)
 GROUP = "realtime-fanout"
 CONSUMER = "fanout-1"
 CONV_TOPIC_PREFIX = "conversation."
+POST_TOPIC_PREFIX = "outbound.post."  # in-app post delivery → the contact's own feed (P1.8)
 _DEDUPE_PREFIX = "rt:fanout:done:"
 _DEDUPE_TTL_SECONDS = 3600
 
@@ -48,6 +49,10 @@ Publisher = Callable[[str, dict[str, Any]], Awaitable[None]]
 def channels_for_event(topic: str, payload: dict[str, Any]) -> list[str]:
     """Target channels for a conversation event: the conversation thread + two inbox buckets
     (the workspace firehose ``all`` and the team/unassigned bucket) so every inbox view updates."""
+    # In-app post delivery goes to the recipient contact's own feed channel.
+    if topic.startswith(POST_TOPIC_PREFIX):
+        contact = payload.get("contact_id")
+        return [realtime.contact_channel(contact)] if contact else []
     channels: list[str] = []
     conv = payload.get("conversation_id")
     ws = payload.get("workspace_id")
@@ -100,7 +105,7 @@ async def consume_once(
     for _stream, entries in resp:
         for entry_id, fields in entries:
             topic = fields.get("topic", "")
-            if topic.startswith(CONV_TOPIC_PREFIX):
+            if topic.startswith(CONV_TOPIC_PREFIX) or topic.startswith(POST_TOPIC_PREFIX):
                 outbox_id = fields["outbox_id"]
                 if not await _already_done(redis, outbox_id):
                     payload = json.loads(fields.get("payload") or "{}")

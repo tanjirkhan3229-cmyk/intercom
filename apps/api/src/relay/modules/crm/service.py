@@ -20,6 +20,7 @@ from __future__ import annotations
 import datetime as dt
 import json
 import uuid
+from collections.abc import AsyncIterator, Mapping
 from typing import Any
 
 import sqlalchemy as sa
@@ -28,6 +29,7 @@ from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from relay.core import outbox
+from relay.core.db import ro_session_scope
 from relay.core.errors import ConflictError, NotFoundError, ValidationError
 from relay.core.ids import IdPrefix, decode_public_id, encode_public_id
 from relay.core.pagination import Page, clamp_limit
@@ -35,8 +37,11 @@ from relay.core.principal import Principal
 from relay.core.rbac import Role, authorize
 from relay.core.redis import get_redis
 
-from . import events, schemas
+from . import audience, events, schemas
 from .models import AttributeDefinition, Company, Contact, ContactCompany, Event
+
+# One audience member from a snapshot scan: (contact_id, email).
+AudienceMember = tuple[uuid.UUID, str | None]
 
 
 def _contact_payload(c: Contact) -> dict[str, Any]:
@@ -372,6 +377,71 @@ async def contact_email(
     if row is None:
         return (None, None)
     return (row[0], row[1])
+
+
+async def contact_is_active(session: AsyncSession, contact_id: uuid.UUID) -> bool:
+    """True if the contact exists and is not soft-deleted (RLS-scoped). Used by outbound to gate a
+    send/delivery at send time so a contact soft-deleted (or GDPR-erased) after the audience
+    snapshot is never messaged."""
+    return (
+        await session.scalar(
+            select(Contact.id).where(Contact.id == contact_id, Contact.deleted_at.is_(None))
+        )
+    ) is not None
+
+
+# --- Audience (P1.8 outbound) — predicate→SQL over contacts -------------------
+
+
+async def load_contact_attribute_types(session: AsyncSession) -> dict[str, str]:
+    """Return ``{custom_key: data_type}`` for contact attributes (drives audience type coercion)."""
+    return await _load_attr_defs(session, "contact")
+
+
+async def validate_contact_audience(
+    session: AsyncSession, predicate: Mapping[str, Any] | None
+) -> None:
+    """Validate an audience predicate compiles against the contact schema (raises 422 if not).
+
+    Called by outbound when a campaign/post segment is saved, so a broken audience is rejected at
+    author time rather than at fire time. An empty predicate ("all contacts") is valid.
+    """
+    attr_types = await load_contact_attribute_types(session)
+    audience.compile_contact_where(predicate, attr_types)
+
+
+async def snapshot_audience(
+    workspace_id: uuid.UUID,
+    predicate: Mapping[str, Any] | None,
+    *,
+    batch_size: int = 2000,
+) -> AsyncIterator[list[AudienceMember]]:
+    """Stream the audience matching ``predicate`` as batches of ``(contact_id, email)``.
+
+    Replica-tolerant (``app_ro``), keyset-paged on the UUIDv7 ``contacts.id`` (index-local, no
+    OFFSET), one short transaction per page so a 100k-contact scan never holds a long-lived txn.
+    Soft-deleted contacts are always excluded. This *materialises membership* only — consent,
+    suppression and frequency caps are re-checked at send time by the caller (P1.8 acceptance
+    #2/#4), never here.
+    """
+    async with ro_session_scope(workspace_id) as session:
+        attr_types = await load_contact_attribute_types(session)
+    where = audience.compile_contact_where(predicate, attr_types)
+
+    cursor: uuid.UUID | None = None
+    while True:
+        stmt = select(Contact.id, Contact.email).where(where)
+        if cursor is not None:
+            stmt = stmt.where(Contact.id > cursor)
+        stmt = stmt.order_by(Contact.id).limit(batch_size)
+        async with ro_session_scope(workspace_id) as session:
+            rows = (await session.execute(stmt)).all()
+        if not rows:
+            return
+        yield [(row[0], row[1]) for row in rows]
+        if len(rows) < batch_size:
+            return
+        cursor = rows[-1][0]
 
 
 # --- Contacts: CRUD -----------------------------------------------------------

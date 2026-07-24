@@ -56,6 +56,7 @@ celery_app.conf.update(
         "relay.modules.reporting.tasks",
         "relay.modules.webhooks.tasks",
         "relay.modules.automation.tasks",
+        "relay.modules.outbound.tasks",
     ],
 )
 
@@ -148,6 +149,18 @@ celery_app.conf.beat_schedule = {
         "task": "automation.scan_stuck_runs",
         "schedule": 30.0,  # seconds
         "options": {"queue": "housekeeping"},
+    },
+    # Keep message_events partitions ahead + drop those past retention (P1.8 outbound firehose).
+    "outbound-maintain-partitions": {
+        "task": "outbound.maintain_partitions",
+        "schedule": crontab(hour="3", minute="30"),  # daily 03:30
+        "options": {"queue": "housekeeping"},
+    },
+    # Reconcile firing-campaign stats + flip firing→sent when sends/deliveries drain (P1.8).
+    "outbound-sweep-campaigns": {
+        "task": "outbound.sweep_campaigns",
+        "schedule": 60.0,  # seconds
+        "options": {"queue": "analytics"},
     },
 }
 

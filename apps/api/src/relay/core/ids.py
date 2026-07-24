@@ -132,3 +132,14 @@ class IdPrefix:
     SLA_POLICY = "slp"
     SLA_EVENT = "sae"
     INBOX_VIEW = "viw"
+    # outbound module (P1.8 — broadcasts, posts/chats, subscriptions/consent).
+    # NB: "cmp" is COMPANY and "sub" is a billing subscription — do NOT reuse either here.
+    CAMPAIGN = "cpn"
+    CAMPAIGN_VERSION = "cpv"
+    SEND = "snd"
+    SUBSCRIPTION_TYPE = "sbt"
+    CONSENT = "cns"
+    CONSENT_EVENT = "cne"
+    MESSAGE_EVENT = "mev"
+    POST = "pst"
+    POST_RECEIPT = "prc"

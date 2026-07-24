@@ -189,6 +189,9 @@ class WidgetBootResponse(BaseModel):
     contact: WidgetContactOut
     config: MessengerConfig
     conversations: list[ConversationOut]
+    # Delivered-but-unseen in-app posts (P1.8), caught up on boot. Untyped dicts avoid a
+    # cross-module schema import (the outbound module owns the shape).
+    posts: list[dict[str, Any]] = Field(default_factory=list)
 
 
 class WidgetStartConversation(BaseModel):

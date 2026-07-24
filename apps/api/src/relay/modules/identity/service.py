@@ -191,6 +191,12 @@ async def signup(
     session.add(Membership(workspace_id=ws.id, admin_id=admin.id, role=Role.OWNER))
     await session.flush()
 
+    # Seed default subscription types so consent has categories from day one (P1.8). Lazy import
+    # keeps the module load acyclic; import-linter allows identity -> outbound.service.
+    from relay.modules.outbound import service as outbound_service
+
+    await outbound_service.seed_default_subscription_types(session, ws.id)
+
     return await _issue_session(
         session,
         admin=admin,

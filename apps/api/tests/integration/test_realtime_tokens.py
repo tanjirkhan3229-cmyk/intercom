@@ -114,7 +114,9 @@ async def test_widget_token_cannot_subscribe_to_another_conversation(
         conversation_id=decode_public_id(IdPrefix.CONVERSATION, conv_a["id"]),
     )
     claims = realtime.decode_centrifugo_token(token)
-    assert claims["channels"] == [f"conv:{conv_a['id']}"]
+    # Pinned to its own conversation + its own contact feed (P1.8), never another conversation.
+    assert f"conv:{conv_a['id']}" in claims["channels"]
+    assert f"contact:{conv_a['contact_id']}" in claims["channels"]
     assert f"conv:{conv_b['id']}" not in claims["channels"]
 
 

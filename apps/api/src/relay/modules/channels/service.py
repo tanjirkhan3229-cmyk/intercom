@@ -733,6 +733,27 @@ async def record_ses_event(*, message_json: str) -> str:
     data = json.loads(message_json)
     ntype = data.get("notificationType") or data.get("eventType")
     mail = data.get("mail", {})
+
+    # Campaign engagement (P1.8): route delivery/open/click/bounce/complaint to the outbound module
+    # keyed by the SES MessageId (== sends.provider_id). Non-campaign messages (e.g. agent replies)
+    # resolve to a no-op there and are still suppressed below by the source-address path. The lazy
+    # import breaks the channels<->outbound service import cycle. Best-effort + isolated: a failure
+    # here (transient DB, or 0011 not yet deployed) must NEVER block the compliance-critical
+    # bounce/complaint suppression below, so we log-and-continue rather than let it fail the task.
+    provider_message_id = mail.get("messageId")
+    if provider_message_id and ntype:
+        try:
+            from relay.modules.outbound import service as outbound_service
+
+            await outbound_service.ingest_ses_engagement(
+                provider_message_id=str(provider_message_id),
+                ses_event_type=str(ntype),
+                sns_message_id=data.get("eventId") or None,
+                detail={"notification": ntype},
+            )
+        except Exception as exc:
+            log.warning("channels.ses_event.engagement_failed", error=str(exc))
+
     _name, source_addr = email.utils.parseaddr(mail.get("source") or "")
     if not source_addr:
         return "no_source"
@@ -923,3 +944,45 @@ async def send_email(
         )
         await session.flush()
         return "sent"
+
+
+async def send_broadcast_email(
+    *,
+    from_addr: str,
+    from_name: str,
+    to_addr: str,
+    subject: str,
+    html_body: str,
+    text_body: str,
+    message_id: str,
+    reply_to: str | None = None,
+    list_unsubscribe_url: str | None = None,
+) -> str:
+    """Transport-only broadcast send for the outbound module (P1.8): build the text+HTML MIME
+    (with optional RFC 8058 List-Unsubscribe headers) and hand it to the breaker-wrapped provider.
+
+    Policy (suppression, consent, frequency, exactly-once) lives in ``outbound.service.send_one``;
+    this call is a pure send. A transient provider failure (breaker open / SES throttle) is
+    surfaced as ``RateLimitedError`` so the outbound send-chunk task retries it (rather than the
+    caller swallowing a raw ``SendError`` and silently leaving the recipient unsent); an oversized
+    message raises ``MessageTooLarge`` (terminal).
+    """
+    msg = mime.build_broadcast(
+        sender=from_addr,
+        sender_name=from_name,
+        to_addr=to_addr,
+        subject=subject,
+        html_body=html_body,
+        text_body=text_body,
+        message_id=message_id,
+        reply_to=reply_to,
+        list_unsubscribe_url=list_unsubscribe_url,
+    )
+    raw = mime.render_bytes(msg)
+    if len(raw) > get_settings().email_max_message_bytes:
+        raise MessageTooLarge("outbound email exceeds the maximum message size")
+    try:
+        return sender.get_sender().send(raw=raw, sender=from_addr, recipients=[to_addr])
+    except sender.SendError as exc:
+        # Transient (breaker open / provider throttle) → retryable by the send-chunk task.
+        raise RateLimitedError("email provider send failed") from exc
