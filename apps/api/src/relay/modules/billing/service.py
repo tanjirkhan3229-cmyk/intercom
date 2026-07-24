@@ -18,6 +18,7 @@ from __future__ import annotations
 import datetime as dt
 import uuid
 from dataclasses import dataclass
+from decimal import Decimal
 from typing import Any
 
 import sqlalchemy as sa
@@ -40,6 +41,11 @@ from .stripe_client import StripeClient, verify_and_parse_event
 
 # Statuses that count as "in good standing" for entitlements (RFC-000 §8: seats now).
 ACTIVE_STATUSES: frozenset[str] = frozenset({"trialing", "active"})
+
+# The meter name for Neko resolutions (RFC-003 §8). The single source of truth so the ai module,
+# the Stripe sync task and reconciliation all key off the same string (billing stays meter-agnostic
+# otherwise — it never learns what a "resolution" is, it just counts this meter).
+RESOLUTION_METER = "ai_resolution"
 
 
 def _now() -> dt.datetime:
@@ -241,6 +247,84 @@ async def record_usage(
         },
     )
     return True
+
+
+# --- Neko resolution metering (RFC-003 §8 — the money loop, P1.3) ---------------------------
+
+
+def _month_start(now: dt.datetime) -> dt.datetime:
+    """First instant of ``now``'s calendar month, UTC — the monthly spend-cap / meter window."""
+    return now.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
+
+
+async def net_usage_in_period(
+    session: AsyncSession,
+    workspace_id: uuid.UUID,
+    meter: str,
+    *,
+    start: dt.datetime,
+    end: dt.datetime | None = None,
+) -> Decimal:
+    """Net metered quantity (``SUM(qty)`` — claw-backs net out) in ``[start, end)``, RLS-scoped."""
+    conds = [
+        UsageRecord.workspace_id == workspace_id,
+        UsageRecord.meter == meter,
+        UsageRecord.occurred_at >= start,
+    ]
+    if end is not None:
+        conds.append(UsageRecord.occurred_at < end)
+    total = await session.scalar(
+        select(sa.func.coalesce(sa.func.sum(UsageRecord.qty), 0)).where(*conds)
+    )
+    return Decimal(total or 0)
+
+
+@dataclass(frozen=True)
+class ResolutionUsage:
+    """A workspace's month-to-date Neko resolution usage (RFC-003 §8-9)."""
+
+    resolutions: Decimal  # net count this month (claw-backs subtracted)
+    spend_usd: Decimal  # resolutions times the per-resolution price
+
+
+async def resolution_usage_this_month(
+    session: AsyncSession, workspace_id: uuid.UUID, *, now: dt.datetime | None = None
+) -> ResolutionUsage:
+    """Month-to-date net resolutions + spend for a workspace (drives the spend cap, RFC-003 §9)."""
+    now = now or _now()
+    resolutions = await net_usage_in_period(
+        session, workspace_id, RESOLUTION_METER, start=_month_start(now)
+    )
+    price = Decimal(get_settings().billing_resolution_price_usd)
+    return ResolutionUsage(resolutions=resolutions, spend_usd=resolutions * price)
+
+
+async def clawback_resolution(
+    session: AsyncSession, *, workspace_id: uuid.UUID, close_source_id: str
+) -> bool:
+    """Reverse a metered Neko resolution when its conversation reopens (RFC-003 §8).
+
+    Appends a negative correction row **iff** the original ``+1`` for ``close_source_id`` exists and
+    hasn't already been clawed back — idempotent (a redelivered reopen re-derives the same
+    ``clawback:`` source id and ``ON CONFLICT`` no-ops) and written in the same transaction as the
+    reopen (master rule 2). Returns True if a claw-back row was appended."""
+    original = await session.scalar(
+        select(UsageRecord.id).where(
+            UsageRecord.workspace_id == workspace_id,
+            UsageRecord.meter == RESOLUTION_METER,
+            UsageRecord.source_id == close_source_id,
+            UsageRecord.qty > 0,
+        )
+    )
+    if original is None:
+        return False  # that close was never a metered Neko resolution — nothing to reverse
+    return await record_usage(
+        session,
+        workspace_id=workspace_id,
+        meter=RESOLUTION_METER,
+        qty=-1,
+        source_id=f"clawback:{close_source_id}",
+    )
 
 
 # --- Webhooks (RFC-002 §5.6: idempotent by event id, dunning -> banner state) ---------------

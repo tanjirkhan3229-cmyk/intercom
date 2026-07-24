@@ -301,3 +301,66 @@ export interface SourceInput {
   locale?: string;
   audience?: Record<string, unknown>;
 }
+
+// --- Neko AI agent (P1.3) -----------------------------------------------------
+
+export type NekoTone = "friendly" | "neutral" | "formal";
+export type OfficeHoursBehavior = "answer" | "handoff";
+
+/** Per-workspace Neko controls (RFC-003 §5-6, §9). Mirrors the backend `AiSettingsOut`. */
+export interface AiSettings {
+  enabled: boolean;
+  channels: string[];
+  grounding_threshold: number;
+  max_clarifications: number;
+  source_kinds: string[] | null;
+  tone: NekoTone;
+  persona: string | null;
+  answer_max_tokens: number;
+  always_handoff_intents: string[];
+  office_hours_behavior: OfficeHoursBehavior;
+  monthly_spend_cap_usd: number | null;
+}
+
+export type AiSettingsInput = Partial<AiSettings>;
+
+/** Month-to-date resolution usage + spend-cap status (RFC-003 §9). */
+export interface NekoUsage {
+  month_resolutions: number;
+  month_spend_usd: number;
+  monthly_spend_cap_usd: number | null;
+  over_cap: boolean;
+}
+
+/** One retrieved chunk in a preview trace — the evidence + its fused score. */
+export interface RetrievedChunk {
+  label?: string;
+  chunk_id: string;
+  source_id: string;
+  source_kind: string;
+  score: number;
+}
+
+/** A preview-sandbox turn (RFC-003 §5): same decisions + retrieval trace as a real turn. */
+export interface SandboxTurn {
+  outcome: string;
+  handoff_reason: string | null;
+  rewritten_query: string | null;
+  retrieved: RetrievedChunk[];
+  grounding_score: number | null;
+  citations: string[];
+  verdict: Record<string, unknown>;
+  answer: string | null;
+  prompt_hash: string | null;
+  provider: string | null;
+  models: Record<string, unknown>;
+  tokens: Record<string, unknown>;
+  cost_usd: number;
+  latency_ms: Record<string, unknown>;
+  trace: Record<string, unknown>;
+}
+
+export interface SandboxTurnInput {
+  message: string;
+  history?: { role: "customer" | "neko"; body: string }[];
+}

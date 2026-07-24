@@ -410,6 +410,18 @@ async def widget_rating(
     return await service.contact_rate(session, principal, conversation_id, req)
 
 
+@router.post(
+    "/widget/conversations/{conversation_id}/resolve",
+    response_model=schemas.ConversationOut,
+)
+async def widget_confirm_resolution(
+    conversation_id: str, principal: ContactSession, session: SessionDep
+) -> schemas.ConversationOut:
+    """The visitor confirms Neko resolved their question (RFC-003 §8) — meters the resolution if it
+    qualifies, in the same txn as the close."""
+    return await service.contact_confirm_resolution(session, principal, conversation_id)
+
+
 @router.post("/widget/conversations/{conversation_id}/typing", status_code=204)
 async def widget_typing(
     conversation_id: str, contact: ContactSession, session: SessionDep

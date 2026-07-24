@@ -24,16 +24,32 @@ from relay.core.errors import NotFoundError, ValidationError
 from relay.core.ids import IdPrefix, decode_public_id, encode_public_id, uuid7
 from relay.core.principal import Principal
 from relay.core.rbac import Role, authorize
-from relay.modules.ai import ledger, prompts, schemas
+from relay.modules.ai import ledger, metering, prompts, schemas
+from relay.modules.ai.metering import (
+    confirm_resolution,
+    on_conversation_reopened,
+    resolve_by_silence,
+)
 from relay.modules.ai.models import AgentRun, AiSettings
-from relay.modules.ai.pipeline import TurnResult, run_turn
+from relay.modules.ai.pipeline import TurnResult, run_turn, sandbox_run
 from relay.modules.ai.prompts import EvidenceChunk
 from relay.modules.ai.resilience import StreamOutcome, build_router
 
-__all__ = ["TurnResult", "run_turn"]
+# Cross-module entry points other modules call: turn orchestration + the RFC-003 §8 metering hooks
+# (messaging invokes ``confirm_resolution``/``on_conversation_reopened``; the beat task invokes
+# ``resolve_by_silence``). Re-exported here so callers only ever import ``ai.service``.
+__all__ = [
+    "TurnResult",
+    "confirm_resolution",
+    "on_conversation_reopened",
+    "resolve_by_silence",
+    "run_turn",
+]
 
 # The chunk source kinds a workspace may scope Neko to (mirrors RFC-002 §5.5 content_chunks).
 _ALLOWED_SOURCE_KINDS = frozenset({"article", "pdf", "url", "snippet", "custom_answer"})
+_ALLOWED_TONES = frozenset({"friendly", "neutral", "formal"})
+_ALLOWED_OFFICE_HOURS = frozenset({"answer", "handoff"})
 
 
 def _decode_or_404(prefix: str, public_id: str, what: str) -> uuid.UUID:
@@ -53,8 +69,14 @@ def _settings_out_from_view(view: ledger.AiSettingsView) -> schemas.AiSettingsOu
         grounding_threshold=view.grounding_threshold,
         max_clarifications=view.max_clarifications,
         source_kinds=view.source_kinds,
+        tone=view.tone,
         persona=view.persona,
         answer_max_tokens=view.answer_max_tokens,
+        always_handoff_intents=view.always_handoff_intents,
+        office_hours_behavior=view.office_hours_behavior,
+        monthly_spend_cap_usd=(
+            float(view.monthly_spend_cap_usd) if view.monthly_spend_cap_usd is not None else None
+        ),
     )
 
 
@@ -81,6 +103,13 @@ async def update_settings(
         bad = [k for k in req.source_kinds if k not in _ALLOWED_SOURCE_KINDS]
         if bad:
             raise ValidationError(f"unknown source_kinds: {bad}")
+    if req.tone is not None and req.tone not in _ALLOWED_TONES:
+        raise ValidationError(f"unknown tone: {req.tone!r} (expected {sorted(_ALLOWED_TONES)})")
+    if (
+        req.office_hours_behavior is not None
+        and req.office_hours_behavior not in _ALLOWED_OFFICE_HOURS
+    ):
+        raise ValidationError(f"unknown office_hours_behavior: {req.office_hours_behavior!r}")
     provided: dict[str, Any] = {
         f: getattr(req, f)
         for f in (
@@ -89,8 +118,12 @@ async def update_settings(
             "grounding_threshold",
             "max_clarifications",
             "source_kinds",
+            "tone",
             "persona",
             "answer_max_tokens",
+            "always_handoff_intents",
+            "office_hours_behavior",
+            "monthly_spend_cap_usd",
         )
         if getattr(req, f) is not None
     }
@@ -102,16 +135,56 @@ async def update_settings(
     await session.execute(stmt)
     row = await _get_settings_row(session, principal.workspace_id)
     assert row is not None  # just upserted this workspace's row
-    return _settings_out_from_view(
-        ledger.AiSettingsView(
-            enabled=row.enabled,
-            channels=list(row.channels),
-            grounding_threshold=row.grounding_threshold,
-            max_clarifications=row.max_clarifications,
-            source_kinds=list(row.source_kinds) if row.source_kinds is not None else None,
-            persona=row.persona,
-            answer_max_tokens=row.answer_max_tokens,
-        )
+    return _settings_out_from_view(ledger.view_from_row(row))
+
+
+# --- Preview sandbox (RFC-003 §5, P1.3) ---------------------------------------
+
+
+async def preview_turn(principal: Principal, req: schemas.SandboxTurnIn) -> schemas.SandboxTurnOut:
+    """Run a turn against the workspace's current knowledge and return the answer + full retrieval
+    trace, persisting nothing (admins see *why* an answer happened). The trace shape matches an
+    ``agent_runs`` row (P1.3 acceptance)."""
+    authorize(principal, min_role=Role.ADMIN)
+    record = await sandbox_run(
+        workspace_id=principal.workspace_id,
+        message=req.message,
+        history=[(m.role, m.body) for m in req.history],
+    )
+    return schemas.SandboxTurnOut(
+        outcome=record.outcome,
+        handoff_reason=record.handoff_reason,
+        rewritten_query=record.rewritten_query,
+        retrieved=record.retrieved,
+        grounding_score=record.grounding_score,
+        citations=record.citations,
+        verdict=record.verdict,
+        answer=record.answer,
+        prompt_hash=record.prompt_hash,
+        provider=record.provider,
+        models=record.models,
+        tokens=record.tokens,
+        cost_usd=record.cost_usd,
+        latency_ms=record.latency_ms,
+        trace=record.trace,
+    )
+
+
+# --- Usage / spend cap (RFC-003 §9) -------------------------------------------
+
+
+async def neko_usage(session: AsyncSession, principal: Principal) -> schemas.NekoUsageOut:
+    """Month-to-date Neko resolutions + spend for the workspace, and whether it's over its cap."""
+    authorize(principal, min_role=Role.AGENT)
+    view = await ledger.load_settings(session, principal.workspace_id)
+    summary = await metering.usage_summary(
+        session, principal.workspace_id, view.monthly_spend_cap_usd
+    )
+    return schemas.NekoUsageOut(
+        month_resolutions=float(summary.resolutions),
+        month_spend_usd=float(summary.spend_usd),
+        monthly_spend_cap_usd=float(summary.cap_usd) if summary.cap_usd is not None else None,
+        over_cap=summary.over_cap,
     )
 
 

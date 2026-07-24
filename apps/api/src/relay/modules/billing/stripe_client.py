@@ -184,6 +184,36 @@ def update_subscription_item_quantity_sync(
         resp.raise_for_status()
 
 
+@_stripe_retry
+def create_meter_event_sync(
+    *,
+    settings: Settings,
+    event_name: str,
+    stripe_customer_id: str,
+    value: int,
+    identifier: str,
+) -> None:
+    """Report one usage delta to a Stripe Billing Meter (P1.3, RFC-002 §5.6 async metering).
+
+    Billing Meters aggregate events by ``event_name`` + customer — no per-item quantity to keep in
+    sync, unlike seats. ``identifier`` is Stripe's native dedupe key (a redelivered event with the
+    same identifier is ignored), so re-running the sync task is safe; the HTTP ``Idempotency-Key``
+    is the same value for transport-level retry safety. ``value`` may be negative (a resolution
+    claw-back) — billing meters accept negative-value events against a ``sum`` aggregation."""
+    auth = (settings.stripe_secret_key, "")
+    headers = _headers(
+        api_version=settings.stripe_api_version, idempotency_key=f"meter:{identifier}"
+    )
+    params = {
+        "event_name": event_name,
+        "identifier": identifier,
+        "payload": {"stripe_customer_id": stripe_customer_id, "value": str(value)},
+    }
+    with httpx.Client(base_url=settings.stripe_api_base, auth=auth, timeout=_TIMEOUT) as client:
+        resp = client.post("/v1/billing/meter_events", data=_encode_form(params), headers=headers)
+        resp.raise_for_status()
+
+
 def verify_and_parse_event(
     *, payload: bytes, sig_header: str | None, webhook_secret: str
 ) -> dict[str, Any]:

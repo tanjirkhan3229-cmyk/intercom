@@ -20,7 +20,7 @@ import uuid
 from typing import Any
 
 import sqlalchemy as sa
-from sqlalchemy import Boolean, Float, Integer, SmallInteger, Text
+from sqlalchemy import Boolean, Float, Integer, Numeric, SmallInteger, Text
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.dialects.postgresql import UUID as PgUUID
 from sqlalchemy.orm import Mapped, mapped_column
@@ -134,12 +134,25 @@ class AiSettings(UUIDPrimaryKey, TimestampMixin, WorkspaceScoped, Base):
     )
     # Source scope: which chunk source_kinds Neko may ground on (null ⇒ all). P1.3 surfaces this.
     source_kinds: Mapped[list[str] | None] = mapped_column(JSONB, nullable=True)
-    # Persona/tone guidance folded into the system policy (P1.3 expands to friendly/neutral/formal).
+    # Tone preset (friendly | neutral | formal) — folded into the generation persona (RFC-003 §7).
+    tone: Mapped[str] = mapped_column(Text, nullable=False, server_default=sa.text("'neutral'"))
+    # Free-text persona/custom guidance appended to the tone (the "custom guidance text" control).
     persona: Mapped[str | None] = mapped_column(Text, nullable=True)
-    # Answer-length budget hint (tokens) for generation (P1.3 surfaces the control).
+    # Answer-length budget hint (tokens) for generation — the short/medium/long control (P1.3).
     answer_max_tokens: Mapped[int] = mapped_column(
         Integer, nullable=False, server_default=sa.text("400")
     )
+    # Handoff rules (RFC-003 §5). Intents that always route to a human (matched in preflight);
+    # office-hours behavior (``answer`` — Neko still answers outside hours — or ``handoff``).
+    always_handoff_intents: Mapped[list[str]] = mapped_column(
+        JSONB, nullable=False, server_default=sa.text("'[]'::jsonb")
+    )
+    office_hours_behavior: Mapped[str] = mapped_column(
+        Text, nullable=False, server_default=sa.text("'answer'")
+    )
+    # Monthly Neko spend cap in USD (RFC-003 §9). NULL ⇒ no cap. Past it, Neko routes to humans
+    # (never a silent drop) and admins are notified; enforced per-turn in the pipeline preflight.
+    monthly_spend_cap_usd: Mapped[Any | None] = mapped_column(Numeric, nullable=True)
 
     updated_at: Mapped[dt.datetime] = mapped_column(
         sa.DateTime(timezone=True), nullable=False, server_default=sa.func.now()
