@@ -43,6 +43,10 @@ class Plan(UUIDPrimaryKey, TimestampMixin, Base):
     code: Mapped[str] = mapped_column(Text, nullable=False, unique=True)
     name: Mapped[str] = mapped_column(Text, nullable=False)
     stripe_price_id: Mapped[str] = mapped_column(Text, nullable=False)
+    # Optional metered price for usage-based lines (P1.3: the per-resolution Neko meter). NULL on a
+    # seat-only plan. Attached to the subscription at checkout; the usage itself reports via the
+    # Stripe Billing Meter ``stripe_resolution_meter_event`` (settings), not a per-item quantity.
+    metered_stripe_price_id: Mapped[str | None] = mapped_column(Text, nullable=True)
     seat_based: Mapped[bool] = mapped_column(nullable=False, server_default=sa.text("true"))
     trial_days: Mapped[int] = mapped_column(nullable=False, server_default=sa.text("14"))
     is_active: Mapped[bool] = mapped_column(nullable=False, server_default=sa.text("true"))
@@ -114,6 +118,13 @@ class UsageRecord(UUIDPrimaryKey, TimestampMixin, WorkspaceScoped, Base):
     occurred_at: Mapped[dt.datetime] = mapped_column(sa.DateTime(timezone=True), nullable=False)
     # Natural key for idempotency (e.g. the triggering domain row's id). Unique per meter.
     source_id: Mapped[str] = mapped_column(Text, nullable=False)
+    # Async Stripe-metering watermark (P1.3): NULL until ``tasks.sync_resolutions_to_stripe`` has
+    # reported this row to Stripe. Not a mutation of the accounting (qty/meter stay append-only,
+    # corrections are negative rows) — just a per-row "pushed yet?" flag, like
+    # ``subscriptions.seats_stripe_synced``. Re-pushing is safe (deterministic meter identifier).
+    stripe_synced_at: Mapped[dt.datetime | None] = mapped_column(
+        sa.DateTime(timezone=True), nullable=True
+    )
 
 
 class StripeWebhookEvent(Base):

@@ -397,6 +397,8 @@ async def append_contact_email(
             topic=events.CONVERSATION_STATE_CHANGED,
             payload={**_conversation_payload(conv), "from": prev, "to": "open"},
         )
+        if prev == "closed":
+            await _on_reopened(session, conv)
     return await _append_part(
         session,
         conv,
@@ -590,6 +592,133 @@ async def set_ai_status(session: AsyncSession, *, conversation_id: uuid.UUID, st
         topic=events.CONVERSATION_AI_STATUS_CHANGED,
         payload={**_conversation_payload(conv), "ai_status": status, "prev_ai_status": prev},
     )
+
+
+# --- Neko resolution surface (P1.3, RFC-003 §8) -------------------------------
+# messaging owns conversation state + the part ledger; the ai module owns the resolution
+# *definition* (RFC-003 §8). So messaging exposes the raw facts (below) + a system-authored close,
+# and ai applies the policy. The claw-back on reopen is triggered from the state-machine here (it
+# must ride the reopen txn — master rule 2), delegating the "was it a metered resolution?" decision
+# to ai/billing via a lazy import (ai↔messaging only ever touch through the service interface).
+
+
+@dataclass(frozen=True)
+class ResolutionFacts:
+    """Everything RFC-003 §8 needs to judge a Neko resolution, read from the conversation head +
+    part ledger (so ai never imports messaging models). ``human_replied_after_neko`` is the
+    "no human teammate replied after Neko's last answer" clause; ``last_close_*`` identify the most
+    recent close (its part id is the meter's ``source_id``; its time bounds the 72 h claw-back)."""
+
+    state: str
+    ai_status: str | None
+    last_neko_answer_at: dt.datetime | None
+    human_replied_after_neko: bool
+    last_close_part_id: uuid.UUID | None
+    last_close_at: dt.datetime | None
+
+
+async def resolution_facts(
+    session: AsyncSession, conversation_id: uuid.UUID
+) -> ResolutionFacts | None:
+    """Facts for the RFC-003 §8 resolution test, or ``None`` if the conversation isn't the caller's
+    (RLS). Newest-first via the time-ordered uuid7 PK (same ordering as ``ai_turn_context``)."""
+    conv = await session.get(Conversation, conversation_id)
+    if conv is None:
+        return None
+    last_neko_answer_at = await session.scalar(
+        select(ConversationPart.created_at)
+        .where(
+            ConversationPart.conversation_id == conversation_id,
+            ConversationPart.author_kind == "ai_agent",
+            ConversationPart.part_type == "comment",
+        )
+        .order_by(ConversationPart.id.desc())
+        .limit(1)
+    )
+    human_after = False
+    if last_neko_answer_at is not None:
+        human_after = (
+            await session.scalar(
+                select(ConversationPart.id)
+                .where(
+                    ConversationPart.conversation_id == conversation_id,
+                    ConversationPart.author_kind == "admin",
+                    ConversationPart.part_type == "comment",
+                    ConversationPart.created_at > last_neko_answer_at,
+                )
+                .limit(1)
+            )
+        ) is not None
+    close_row = (
+        await session.execute(
+            select(ConversationPart.id, ConversationPart.created_at)
+            .where(
+                ConversationPart.conversation_id == conversation_id,
+                ConversationPart.part_type == "state_change",
+                ConversationPart.meta["to"].astext == "closed",
+            )
+            .order_by(ConversationPart.id.desc())
+            .limit(1)
+        )
+    ).first()
+    return ResolutionFacts(
+        state=conv.state,
+        ai_status=conv.ai_status,
+        last_neko_answer_at=last_neko_answer_at,
+        human_replied_after_neko=human_after,
+        last_close_part_id=close_row[0] if close_row else None,
+        last_close_at=close_row[1] if close_row else None,
+    )
+
+
+async def neko_silence_due(
+    session: AsyncSession, cutoff: dt.datetime, *, limit: int = 5000
+) -> list[tuple[uuid.UUID, uuid.UUID]]:
+    """(workspace_id, conversation_id) for open, Neko-handling conversations idle since ``cutoff`` —
+    the 72 h silence-resolution candidates (RFC-003 §8), across ALL tenants. Uses the
+    ``messaging_neko_silence_due`` SECURITY DEFINER function (mirrors the channels/identity pre-
+    tenancy resolvers) so the beat sweep runs without a per-workspace GUC. ``limit`` bounds one
+    sweep; the caller logs when it's saturated (the next sweep picks up the rest)."""
+    rows = await session.execute(
+        sa.text(
+            "SELECT workspace_id, conversation_id "
+            "FROM messaging_neko_silence_due(:cutoff) LIMIT :limit"
+        ),
+        {"cutoff": cutoff, "limit": limit},
+    )
+    return [(r[0], r[1]) for r in rows.all()]
+
+
+async def close_for_resolution(
+    session: AsyncSession, conversation_id: uuid.UUID, *, reason: str
+) -> uuid.UUID | None:
+    """Close a conversation as resolved by Neko (RFC-003 §8) — system-authored, through the state
+    machine so the reporting spine + reopen path see it exactly like any other close. Returns the
+    closing ``state_change`` part id (the meter's ``source_id``), or ``None`` if already closed
+    (idempotent: a re-run doesn't append a second close)."""
+    conv = await _load_for_update(session, conversation_id)
+    if conv.state == "closed":
+        return None
+    prev = conv.state
+    conv.state = "closed"
+    conv.snoozed_until = None
+    conv.waiting_since = None
+    part = await _append_part(
+        session,
+        conv,
+        author_kind="system",
+        author_id=None,
+        part_type="state_change",
+        meta={"from": prev, "to": "closed", "reason": reason},
+    )
+    await outbox.emit(
+        session,
+        aggregate=events.AGGREGATE_CONVERSATION,
+        aggregate_id=conv.id,
+        topic=events.CONVERSATION_STATE_CHANGED,
+        payload={**_conversation_payload(conv), "from": prev, "to": "closed"},
+    )
+    return part.id
 
 
 _UNSET: Any = object()  # sentinel: "argument not supplied" (distinct from a real ``None`` ts)
@@ -853,7 +982,21 @@ async def change_state(
         topic=events.CONVERSATION_STATE_CHANGED,
         payload={**_conversation_payload(conv), "from": prev, "to": target},
     )
+    if target == "open" and prev == "closed":
+        await _on_reopened(session, conv)
     return conversation_out(conv)
+
+
+async def _on_reopened(session: AsyncSession, conv: Conversation) -> None:
+    """A closed conversation was reopened — let the ai module claw back a Neko resolution meter if
+    this close was one and it's still inside the 72 h window (RFC-003 §8, same reopen txn — master
+    rule 2). Lazy import: ai↔messaging touch only through the service interface (import-linter), and
+    a lazy import sidesteps the module-load cycle (ai.pipeline imports messaging.service)."""
+    from relay.modules.ai import service as ai_service
+
+    await ai_service.on_conversation_reopened(
+        session, workspace_id=conv.workspace_id, conversation_id=conv.id
+    )
 
 
 # --- Assignment (W4) ----------------------------------------------------------
@@ -1327,6 +1470,21 @@ async def contact_rate(
         meta={"rating": req.rating},
     )
     return part_out(part)
+
+
+async def contact_confirm_resolution(
+    session: AsyncSession, contact: ContactPrincipal, public_id: str
+) -> schemas.ConversationOut:
+    """The customer confirms Neko resolved their question (RFC-003 §8 "confirmed resolution"). The
+    ai module decides if it qualifies as a metered resolution and, if so, closes it + meters — all
+    in this one txn. Idempotent: a second confirm on an already-closed conversation is a no-op."""
+    conv = await _load_contact_conv(session, public_id, contact.contact_id, for_update=True)
+    from relay.modules.ai import service as ai_service  # lazy: avoid the ai↔messaging load cycle
+
+    await ai_service.confirm_resolution(
+        session, workspace_id=conv.workspace_id, conversation_id=conv.id
+    )
+    return conversation_out(conv)
 
 
 async def contact_typing(session: AsyncSession, contact: ContactPrincipal, public_id: str) -> None:

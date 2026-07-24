@@ -16,6 +16,7 @@ model can never be prompted into another tenant's corpus.
 
 from __future__ import annotations
 
+import datetime as dt
 import json
 import time
 import uuid
@@ -26,7 +27,7 @@ from typing import Any
 from relay.core.db import session_scope
 from relay.core.ids import IdPrefix, encode_public_id
 from relay.core.logging import get_logger
-from relay.modules.ai import ledger, prompts, protocol, streaming
+from relay.modules.ai import ledger, metering, prompts, protocol, streaming
 from relay.modules.ai.prompts import EvidenceChunk, label_for
 from relay.modules.ai.providers import TokenUsage, distinctive_terms
 from relay.modules.ai.resilience import AllProvidersFailed, LLMRouter, StreamOutcome, get_router
@@ -147,6 +148,22 @@ def _last_customer_text(recent: list[messaging_service.AiTurnPart]) -> str | Non
     return None
 
 
+async def _noop_publish(_channel: str, _data: dict[str, Any]) -> None:
+    """Sandbox stream sink: a preview turn streams nowhere (no gateway, no Redis)."""
+    return None
+
+
+def _matches_handoff_intent(text: str, intents: list[str]) -> str | None:
+    """Return the first always-handoff intent (RFC-003 §5) the customer text matches (case-
+    insensitive substring — a tenant lists phrases like "cancel my account"), or None."""
+    lowered = text.lower()
+    for intent in intents:
+        needle = intent.strip().lower()
+        if needle and needle in lowered:
+            return intent
+    return None
+
+
 @dataclass
 class _Turn:
     """Mutable state threaded through one turn's stages; the terminal helpers commit + finalize."""
@@ -165,6 +182,14 @@ class _Turn:
     started: float
     prior_clarifications: int
     recent: list[messaging_service.AiTurnPart]
+
+    # Spend cap (RFC-003 §9): set in Phase A when the workspace is over its monthly cap — the turn
+    # routes to a human before any model call (checked at the top of ``_run_stages``).
+    over_spend_cap: bool = False
+    # Preview sandbox (P1.3): when set, the terminals persist NOTHING (no part, ledger, meter,
+    # stream) — they stash the would-be ledger record in ``sandbox_record`` and return.
+    sandbox: bool = False
+    sandbox_record: ledger.LedgerRecord | None = None
 
     # accumulated
     history_summary: str | None = None
@@ -245,6 +270,9 @@ class _Turn:
 
     # -- terminals --
     async def _commit_answer(self, answer: str, citations: list[str]) -> TurnResult:
+        if self.sandbox:
+            self.sandbox_record = self._base_record("answered", answer=answer, citations=citations)
+            return TurnResult(outcome="answered", run_id=self.run_id, answer=answer)
         async with session_scope(self.workspace_id) as session:
             part = await messaging_service.append_ai_reply(
                 session,
@@ -269,6 +297,9 @@ class _Turn:
 
     async def _commit_clarify(self) -> TurnResult:
         question = prompts.clarifying_question(self.customer_text)
+        if self.sandbox:
+            self.sandbox_record = self._base_record("clarify", answer=question)
+            return TurnResult(outcome="clarify", run_id=self.run_id, answer=question)
         async with session_scope(self.workspace_id) as session:
             part = await messaging_service.append_ai_reply(
                 session,
@@ -290,6 +321,9 @@ class _Turn:
         return TurnResult(outcome="clarify", run_id=self.run_id, part_id=part.id, answer=question)
 
     async def _commit_handoff(self, reason: str, *, outcome: str = "handoff") -> TurnResult:
+        if self.sandbox:
+            self.sandbox_record = self._base_record(outcome, handoff_reason=reason)
+            return TurnResult(outcome=outcome, run_id=self.run_id, handoff_reason=reason)
         await self.stream.superseded(reason)
         note = prompts.handoff_summary_note(
             recap=_summary(self.recent) or self.customer_text,
@@ -324,6 +358,9 @@ class _Turn:
         )
 
     async def _commit_ineligible(self, reason: str) -> TurnResult:
+        if self.sandbox:
+            self.sandbox_record = self._base_record("ineligible", handoff_reason=reason)
+            return TurnResult(outcome="ineligible", run_id=self.run_id, reason=reason)
         async with session_scope(self.workspace_id) as session:
             await ledger.finalize(
                 session, self.run_id, self._base_record("ineligible", handoff_reason=reason)
@@ -381,6 +418,15 @@ async def run_turn(
         prior_clarifications = await ledger.count_clarifications(session, conversation_id)
         recent = list(ctx.recent)
 
+        # Spend cap (RFC-003 §9): if the workspace is past its monthly cap, Neko routes this turn to
+        # a human (below, in _run_stages) instead of answering — never a silent drop — and admins
+        # are notified once/month. Checked live per turn so a breach flips routing within one turn.
+        over_spend_cap = await metering.is_over_spend_cap(
+            session, workspace_id, settings_view.monthly_spend_cap_usd
+        )
+        if over_spend_cap:
+            await metering.notify_spend_cap_reached(session, workspace_id)
+
     conv_public = encode_public_id(IdPrefix.CONVERSATION, conversation_id)
     turn = _Turn(
         workspace_id=workspace_id,
@@ -397,6 +443,7 @@ async def run_turn(
         started=started,
         prior_clarifications=prior_clarifications,
         recent=recent,
+        over_spend_cap=over_spend_cap,
     )
     return await _run_stages(turn)
 
@@ -405,6 +452,17 @@ async def _run_stages(turn: _Turn) -> TurnResult:
     settings = turn.settings
     history = _summary(turn.recent)
     turn.history_summary = history
+
+    # --- Spend cap (RFC-003 §9): route to a human before any model call -----------------------
+    if turn.over_spend_cap:
+        return await turn._commit_handoff("spend_cap_reached")
+
+    # --- Always-handoff intents (RFC-003 §5): route without spending a model call --------------
+    matched_intent = _matches_handoff_intent(
+        turn.customer_text, turn.settings_view.always_handoff_intents
+    )
+    if matched_intent:
+        return await turn._commit_handoff("always_handoff_intent")
 
     # --- Preflight (cheap, ≤400 ms) -----------------------------------------------------------
     t = _now()
@@ -570,3 +628,64 @@ async def _run_stages(turn: _Turn) -> TurnResult:
         return await turn._commit_handoff("verify_reject")
 
     return await turn._commit_answer(answer_text, cited)
+
+
+async def sandbox_run(
+    *,
+    workspace_id: uuid.UUID,
+    message: str,
+    history: list[tuple[str, str]] | None = None,
+    router: LLMRouter | None = None,
+    settings: Settings | None = None,
+) -> ledger.LedgerRecord:
+    """Run a turn against the workspace's *current* knowledge WITHOUT persisting anything — the
+    preview sandbox (P1.3, RFC-003 §5). Same stages, same decisions, same retrieval trace as a real
+    turn, but no part / ledger row / meter / stream: admins see *why* an answer happened. The
+    returned ``LedgerRecord`` carries the identical ``retrieved`` + ``trace`` an ``agent_runs`` row
+    would (so the sandbox trace matches ``agent_runs`` — the acceptance check).
+
+    ``history`` is an optional list of ``(role, body)`` where role is ``"customer"``/``"neko"``.
+    The spend cap is deliberately NOT enforced here (previewing must never be blocked)."""
+    settings = settings or get_settings()
+    router = router or get_router()
+    started = _now()
+    async with session_scope(workspace_id) as session:
+        settings_view = await ledger.load_settings(session, workspace_id, settings=settings)
+        ws_ref = await identity_service.get_workspace_ref(session, workspace_id)
+        workspace_name = ws_ref.name if ws_ref else "Support"
+
+    now = dt.datetime.now(dt.UTC)
+    recent = [
+        messaging_service.AiTurnPart(
+            author_kind="contact" if role == "customer" else "ai_agent",
+            part_type="comment",
+            body=body,
+            created_at=now,
+        )
+        for role, body in (history or [])
+    ]
+    recent.append(
+        messaging_service.AiTurnPart(
+            author_kind="contact", part_type="comment", body=message, created_at=now
+        )
+    )
+    turn = _Turn(
+        workspace_id=workspace_id,
+        conversation_id=uuid.uuid4(),
+        trigger_part_id=uuid.uuid4(),
+        run_id=uuid.uuid4(),
+        conv_public="sandbox",
+        workspace_name=workspace_name,
+        customer_text=message,
+        settings_view=settings_view,
+        stream=streaming.TurnStream("sandbox", publish=_noop_publish),
+        router=router,
+        settings=settings,
+        started=started,
+        prior_clarifications=0,
+        recent=recent,
+        sandbox=True,
+    )
+    await _run_stages(turn)
+    assert turn.sandbox_record is not None  # every terminal stashes one in sandbox mode
+    return turn.sandbox_record

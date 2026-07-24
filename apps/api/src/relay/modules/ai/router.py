@@ -32,6 +32,20 @@ async def update_ai_settings(
     return await service.update_settings(session, principal, req)
 
 
+@router.post("/ai/preview", response_model=schemas.SandboxTurnOut)
+async def preview_turn(
+    req: schemas.SandboxTurnIn, principal: CurrentPrincipal
+) -> schemas.SandboxTurnOut:
+    """Preview sandbox (admin): run a turn against current knowledge with the retrieval trace
+    visible, persisting nothing (RFC-003 §5)."""
+    return await service.preview_turn(principal, req)
+
+
+@router.get("/ai/usage", response_model=schemas.NekoUsageOut)
+async def get_neko_usage(principal: CurrentPrincipal, session: SessionDep) -> schemas.NekoUsageOut:
+    return await service.neko_usage(session, principal)
+
+
 @router.get("/ai/runs/{run_id}", response_model=schemas.AgentRunOut)
 async def get_agent_run(
     run_id: str, principal: CurrentPrincipal, session: SessionDep

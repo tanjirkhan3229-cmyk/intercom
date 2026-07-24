@@ -99,6 +99,26 @@ celery_app.conf.beat_schedule = {
         "schedule": 300.0,  # every 5 minutes
         "options": {"queue": "housekeeping"},
     },
+    # Neko resolution metering (P1.3, RFC-003 §8-9). Same dirty-poll shape as seats: push only
+    # un-synced ``usage_records`` to Stripe Billing Meters (never from the request path), plus a
+    # monthly reconciliation that logs the authoritative total and re-pushes anything left behind.
+    "billing-sync-resolutions-to-stripe": {
+        "task": "billing.sync_resolutions_to_stripe",
+        "schedule": 300.0,  # every 5 minutes
+        "options": {"queue": "housekeeping"},
+    },
+    "billing-reconcile-usage-monthly": {
+        "task": "billing.reconcile_usage_monthly",
+        "schedule": crontab(day_of_month="1", hour="4", minute="0"),  # 1st of month, 04:00
+        "options": {"queue": "housekeeping"},
+    },
+    # 72 h-silence resolutions (RFC-003 §8): meter conversations Neko answered that the customer
+    # left silent. A conversation crossing the window is metered within one sweep.
+    "ai-scan-silence-resolutions": {
+        "task": "ai.scan_silence_resolutions",
+        "schedule": crontab(minute="*/15"),  # every 15 minutes
+        "options": {"queue": "housekeeping"},
+    },
     # Verify pending sending domains (P0.7 email — DNS/SES check).
     "channels-poll-domains": {
         "task": "channels.poll_domains",

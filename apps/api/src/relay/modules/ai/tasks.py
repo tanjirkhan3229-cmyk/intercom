@@ -9,11 +9,15 @@ every other turn in the worker process.
 
 from __future__ import annotations
 
+import datetime as dt
 import uuid
 
 from relay.core.asyncio_bridge import run_coro
+from relay.core.db import session_scope
 from relay.core.logging import get_logger
+from relay.modules.ai import metering
 from relay.modules.ai import service as ai_service
+from relay.modules.messaging import service as messaging_service
 from relay.worker import celery_app
 
 log = get_logger(__name__)
@@ -43,3 +47,32 @@ def run_turn(
         "run_id": str(result.run_id) if result.run_id else None,
         "reason": result.reason,
     }
+
+
+@celery_app.task(name="ai.scan_silence_resolutions", queue="housekeeping")
+def scan_silence_resolutions() -> int:
+    """Meter conversations Neko answered that the customer left silent for 72 h (RFC-003 §8).
+
+    The silence half of the resolution definition (the confirm half fires inline on the customer's
+    confirm). Idempotent + re-runnable: a conversation already closed/metered is skipped, and each
+    resolve rides its own per-workspace txn (close + meter atomic — master rule 2). Returns the
+    number of resolutions metered this sweep."""
+    return run_coro(_scan_silence_resolutions())
+
+
+async def _scan_silence_resolutions() -> int:
+    cutoff = dt.datetime.now(dt.UTC) - dt.timedelta(hours=metering.SILENCE_HOURS)
+    async with session_scope() as session:  # SECURITY DEFINER scan — no per-workspace GUC needed
+        due = await messaging_service.neko_silence_due(session, cutoff)
+    if len(due) >= 5000:  # sweep saturated — the next tick clears the tail (no silent drop)
+        log.warning("ai.silence_sweep.saturated", due=len(due))
+    metered = 0
+    for workspace_id, conversation_id in due:
+        async with session_scope(workspace_id) as session:
+            if await ai_service.resolve_by_silence(
+                session, workspace_id=workspace_id, conversation_id=conversation_id
+            ):
+                metered += 1
+    if metered:
+        log.info("ai.silence_sweep.metered", resolutions=metered)
+    return metered

@@ -17,6 +17,7 @@ Every task is idempotent: re-running either is a no-op once ``seats == seats_str
 
 from __future__ import annotations
 
+import datetime as dt
 import json
 
 import psycopg
@@ -27,7 +28,8 @@ from relay.settings import get_settings
 from relay.worker import celery_app
 
 from . import events
-from .stripe_client import update_subscription_item_quantity_sync
+from .service import RESOLUTION_METER
+from .stripe_client import create_meter_event_sync, update_subscription_item_quantity_sync
 
 log = get_logger(__name__)
 
@@ -128,3 +130,135 @@ def sync_seats_to_stripe() -> int:
     if pushed:
         log.info("billing.seats.pushed_to_stripe", subscriptions_pushed=pushed)
     return pushed
+
+
+# --- Neko resolution metering (P1.3, RFC-002 §5.6 async metering + reconciliation) ----------
+
+_SELECT_STRIPE_CUSTOMER = "SELECT stripe_customer_id FROM subscriptions WHERE workspace_id = %s"
+_SELECT_UNSYNCED_RESOLUTIONS = (
+    "SELECT source_id, qty FROM usage_records "
+    "WHERE meter = %s AND stripe_synced_at IS NULL ORDER BY occurred_at LIMIT %s"
+)
+# Guard on ``stripe_synced_at IS NULL`` so a concurrent pass can't double-mark, and on source_id
+# (unique per (workspace, meter)) so we only touch the row we just reported.
+_MARK_RESOLUTION_SYNCED = (
+    "UPDATE usage_records SET stripe_synced_at = now() "
+    "WHERE meter = %s AND source_id = %s AND stripe_synced_at IS NULL"
+)
+_SUM_RESOLUTIONS_PERIOD = (
+    "SELECT coalesce(sum(qty), 0) FROM usage_records "
+    "WHERE meter = %s AND occurred_at >= %s AND occurred_at < %s"
+)
+_RESOLUTION_SYNC_BATCH = 500
+
+
+@celery_app.task(name="billing.sync_resolutions_to_stripe", queue="housekeeping")
+def sync_resolutions_to_stripe() -> int:
+    """Report un-synced Neko resolution meters to Stripe Billing Meters (P1.3).
+
+    The async, off-request-path leg of the money loop (master rule 5): the request/worker txn only
+    writes the ``usage_records`` row (via ``service.record_usage``); this poll reports it to Stripe
+    and stamps ``stripe_synced_at``. Idempotent — the meter-event ``identifier`` is the row's
+    ``source_id`` (Stripe dedupes), so a crash between the Stripe call and the local stamp just
+    re-reports the same identifier next pass. Workspaces without a Stripe customer yet are skipped
+    (their rows stay un-synced until they subscribe). Negative rows (claw-backs) report as
+    negative-value events."""
+    settings = get_settings()
+    event_name = settings.stripe_resolution_meter_event
+    dsn = settings.database_url_psycopg
+    pushed = 0
+    with psycopg.connect(dsn) as conn:
+        conn.autocommit = False
+        for workspace_id in _iter_workspace_ids(conn):
+            with conn.cursor() as cur:
+                cur.execute(_SET_GUC, (workspace_id,))
+                cur.execute(_SELECT_STRIPE_CUSTOMER, (workspace_id,))
+                sub_row = cur.fetchone()
+                customer_id = sub_row[0] if sub_row else None
+                if customer_id is None:
+                    conn.commit()
+                    continue
+                cur.execute(
+                    _SELECT_UNSYNCED_RESOLUTIONS, (RESOLUTION_METER, _RESOLUTION_SYNC_BATCH)
+                )
+                rows = cur.fetchall()
+            for source_id, qty in rows:
+                create_meter_event_sync(
+                    settings=settings,
+                    event_name=event_name,
+                    stripe_customer_id=customer_id,
+                    value=int(qty),
+                    identifier=source_id,
+                )
+                with conn.cursor() as cur:
+                    cur.execute(_SET_GUC, (workspace_id,))
+                    cur.execute(_MARK_RESOLUTION_SYNCED, (RESOLUTION_METER, source_id))
+                conn.commit()
+                pushed += 1
+    if pushed:
+        log.info("billing.resolutions.pushed_to_stripe", meter_events=pushed)
+    return pushed
+
+
+def _prior_month_bounds(now: dt.datetime) -> tuple[dt.datetime, dt.datetime]:
+    this_month_start = now.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
+    prior_month_start = (this_month_start - dt.timedelta(days=1)).replace(day=1)
+    return prior_month_start, this_month_start
+
+
+@celery_app.task(name="billing.reconcile_usage_monthly", queue="housekeeping")
+def reconcile_usage_monthly() -> int:
+    """Monthly reconciliation of Neko resolution meters (RFC-002 §5.6: Postgres is the source of
+    truth, Stripe is synced asynchronously with reconciliation).
+
+    For the just-closed month, per workspace: logs the authoritative net resolution total
+    (``SUM(qty)``, claw-backs netted) as the billing record of truth, and re-reports any rows that
+    the regular 5-min sync somehow left un-synced (belt-and-suspenders so a stalled sync can't drop
+    a billable unit). Returns the number of workspaces with prior-month resolution activity.
+    # ponytail: authoritative-total-vs-Stripe fetch-and-diff is the upgrade path — the Billing
+    # Meter summary API lands here when we need drift alerting; the re-report already closes the
+    # only lossy gap (a unit recorded locally but never pushed)."""
+    settings = get_settings()
+    dsn = settings.database_url_psycopg
+    event_name = settings.stripe_resolution_meter_event
+    start, end = _prior_month_bounds(dt.datetime.now(dt.UTC))
+    reconciled = 0
+    with psycopg.connect(dsn) as conn:
+        conn.autocommit = False
+        for workspace_id in _iter_workspace_ids(conn):
+            with conn.cursor() as cur:
+                cur.execute(_SET_GUC, (workspace_id,))
+                cur.execute(_SUM_RESOLUTIONS_PERIOD, (RESOLUTION_METER, start, end))
+                total_row = cur.fetchone()
+                net_total = total_row[0] if total_row else 0
+                cur.execute(_SELECT_STRIPE_CUSTOMER, (workspace_id,))
+                sub_row = cur.fetchone()
+                customer_id = sub_row[0] if sub_row else None
+                cur.execute(
+                    _SELECT_UNSYNCED_RESOLUTIONS, (RESOLUTION_METER, _RESOLUTION_SYNC_BATCH)
+                )
+                unsynced = cur.fetchall()
+            if net_total:
+                log.info(
+                    "billing.resolutions.reconciled",
+                    workspace_id=workspace_id,
+                    month=start.date().isoformat(),
+                    net_resolutions=str(net_total),
+                    unsynced_rows=len(unsynced),
+                )
+                reconciled += 1
+            if customer_id is not None:
+                for source_id, qty in unsynced:
+                    create_meter_event_sync(
+                        settings=settings,
+                        event_name=event_name,
+                        stripe_customer_id=customer_id,
+                        value=int(qty),
+                        identifier=source_id,
+                    )
+                    with conn.cursor() as cur:
+                        cur.execute(_SET_GUC, (workspace_id,))
+                        cur.execute(_MARK_RESOLUTION_SYNCED, (RESOLUTION_METER, source_id))
+                    conn.commit()
+            conn.commit()
+    return reconciled

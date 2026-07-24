@@ -1,6 +1,8 @@
 import { RelayClient, RelayApiError } from "@relay/sdk-ts";
 import type { Page } from "@relay/shared";
 import type {
+  AiSettings,
+  AiSettingsInput,
   Article,
   ArticleInput,
   ArticleSummary,
@@ -11,7 +13,10 @@ import type {
   ContactEvent,
   HelpCenterConfig,
   HelpCenterInput,
+  NekoUsage,
   Part,
+  SandboxTurn,
+  SandboxTurnInput,
   SavedReply,
   Session,
   Source,
@@ -270,5 +275,19 @@ export class RelayApi {
   }
   deleteSource(id: string): Promise<void> {
     return this.client.request<void>(`/v0/sources/${id}`, { method: "DELETE" });
+  }
+
+  // --- Neko AI agent (P1.3) ---------------------------------------------------
+  getAiSettings(): Promise<AiSettings> {
+    return this.client.request<AiSettings>("/v0/ai/settings");
+  }
+  updateAiSettings(input: AiSettingsInput): Promise<AiSettings> {
+    return this.client.request<AiSettings>("/v0/ai/settings", { method: "PATCH", body: input });
+  }
+  getNekoUsage(): Promise<NekoUsage> {
+    return this.client.request<NekoUsage>("/v0/ai/usage");
+  }
+  previewNeko(input: SandboxTurnInput): Promise<SandboxTurn> {
+    return this.client.request<SandboxTurn>("/v0/ai/preview", { method: "POST", body: input });
   }
 }

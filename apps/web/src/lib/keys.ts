@@ -22,4 +22,7 @@ export const qk = {
   helpCenter: ["help-center"] as const,
   // Knowledge Hub sources (P1.1)
   sources: ["sources"] as const,
+  // Neko AI agent (P1.3)
+  aiSettings: ["ai-settings"] as const,
+  nekoUsage: ["neko-usage"] as const,
 };

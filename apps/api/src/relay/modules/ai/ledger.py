@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import uuid
 from dataclasses import dataclass, field
+from decimal import Decimal
 from typing import Any
 
 import sqlalchemy as sa
@@ -30,6 +31,12 @@ from relay.core.ids import uuid7
 from relay.modules.ai.models import AgentRun, AiSettings
 from relay.settings import Settings, get_settings
 
+_TONE_GUIDANCE = {
+    "friendly": "Adopt a warm, friendly, conversational tone.",
+    "neutral": "Adopt a clear, professional, neutral tone.",
+    "formal": "Adopt a formal, precise tone.",
+}
+
 
 @dataclass(frozen=True)
 class AiSettingsView:
@@ -40,8 +47,21 @@ class AiSettingsView:
     grounding_threshold: float
     max_clarifications: int
     source_kinds: list[str] | None
+    tone: str
     persona: str | None
     answer_max_tokens: int
+    always_handoff_intents: list[str]
+    office_hours_behavior: str
+    monthly_spend_cap_usd: Decimal | None
+
+    @property
+    def effective_persona(self) -> str | None:
+        """The persona string handed to generation: the tone preset + any custom guidance text."""
+        parts = [_TONE_GUIDANCE.get(self.tone, "")]
+        if self.persona:
+            parts.append(self.persona)
+        combined = " ".join(p for p in parts if p).strip()
+        return combined or None
 
 
 def _default_settings_view(settings: Settings) -> AiSettingsView:
@@ -51,8 +71,30 @@ def _default_settings_view(settings: Settings) -> AiSettingsView:
         grounding_threshold=settings.ai_grounding_threshold_default,
         max_clarifications=1,
         source_kinds=None,
+        tone="neutral",
         persona=None,
         answer_max_tokens=settings.ai_answer_max_tokens,
+        always_handoff_intents=[],
+        office_hours_behavior="answer",
+        monthly_spend_cap_usd=None,
+    )
+
+
+def view_from_row(row: AiSettings) -> AiSettingsView:
+    return AiSettingsView(
+        enabled=row.enabled,
+        channels=list(row.channels),
+        grounding_threshold=row.grounding_threshold,
+        max_clarifications=row.max_clarifications,
+        source_kinds=list(row.source_kinds) if row.source_kinds is not None else None,
+        tone=row.tone,
+        persona=row.persona,
+        answer_max_tokens=row.answer_max_tokens,
+        always_handoff_intents=list(row.always_handoff_intents),
+        office_hours_behavior=row.office_hours_behavior,
+        monthly_spend_cap_usd=(
+            Decimal(row.monthly_spend_cap_usd) if row.monthly_spend_cap_usd is not None else None
+        ),
     )
 
 
@@ -64,15 +106,7 @@ async def load_settings(
     row = await session.scalar(select(AiSettings).where(AiSettings.workspace_id == workspace_id))
     if row is None:
         return _default_settings_view(settings)
-    return AiSettingsView(
-        enabled=row.enabled,
-        channels=list(row.channels),
-        grounding_threshold=row.grounding_threshold,
-        max_clarifications=row.max_clarifications,
-        source_kinds=list(row.source_kinds) if row.source_kinds is not None else None,
-        persona=row.persona,
-        answer_max_tokens=row.answer_max_tokens,
-    )
+    return view_from_row(row)
 
 
 async def claim(

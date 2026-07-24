@@ -1,6 +1,7 @@
 "use client";
 
-import { Inbox, LogOut } from "lucide-react";
+import Link from "next/link";
+import { Bot, BookText, Inbox, LogOut } from "lucide-react";
 import { useAuth } from "@/lib/auth";
 import { useTeams } from "@/lib/hooks";
 import { STATIC_VIEWS, teamViewId } from "@/lib/views";
@@ -58,6 +59,29 @@ export function ViewsSidebar({
             </ul>
           </>
         )}
+      </div>
+
+      <div className="border-t border-border px-2 py-1">
+        <ul className="space-y-0.5">
+          <li>
+            <Link
+              href="/app/ai"
+              className="flex items-center gap-2 rounded-md px-3 py-1.5 text-sm text-muted-foreground transition-colors hover:bg-accent/60 hover:text-foreground"
+            >
+              <Bot className="h-4 w-4" />
+              Neko (AI agent)
+            </Link>
+          </li>
+          <li>
+            <Link
+              href="/app/hc"
+              className="flex items-center gap-2 rounded-md px-3 py-1.5 text-sm text-muted-foreground transition-colors hover:bg-accent/60 hover:text-foreground"
+            >
+              <BookText className="h-4 w-4" />
+              Help Center
+            </Link>
+          </li>
+        </ul>
       </div>
 
       <div className="border-t border-border px-3 py-2">

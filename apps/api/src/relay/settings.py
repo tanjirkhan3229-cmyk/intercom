@@ -108,6 +108,12 @@ class Settings(BaseSettings):
     stripe_checkout_cancel_url: str = "http://localhost:3000/billing/cancel"
     stripe_portal_return_url: str = "http://localhost:3000/settings/billing"
     billing_trial_days: int = 14
+    # Metered Neko resolutions (P1.3, RFC-000 §8: ≈$0.99/resolution). ``resolution_price_usd`` is
+    # the price the monthly spend cap (RFC-003 §9) is computed against; ``resolution_meter_event``
+    # is the Stripe Billing Meter ``event_name`` async usage syncs report against (billing meters
+    # aggregate by event_name + customer; the negative claw-back is a negative-value meter event).
+    billing_resolution_price_usd: str = "0.99"
+    stripe_resolution_meter_event: str = "neko_resolution"
 
     # --- Realtime gateway (Centrifugo — RFC-001 §6.1 gateway row, §6.3) ---
     # Realtime is bought, not built: the API mints per-connection + per-channel HS256 tokens and
