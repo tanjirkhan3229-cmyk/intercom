@@ -63,23 +63,11 @@ celery_app.conf.update(
 
 # Durable timers / periodic housekeeping (RFC-001 §6.4, the `beat` runtime shape).
 celery_app.conf.beat_schedule = {
-    # Drain the analytics event buffers into the partitioned `events` table (W3).
+    # Drain the analytics event buffers into the `events` table (W3).
     "crm-drain-events": {
         "task": "crm.drain_events",
         "schedule": 10.0,  # seconds
         "options": {"queue": "analytics"},
-    },
-    # Keep monthly partitions T+2 months ahead; alerts if any are missing (RFC-002 §5.3).
-    "crm-ensure-partitions": {
-        "task": "crm.ensure_partitions",
-        "schedule": crontab(hour="3", minute="0"),  # daily 03:00
-        "options": {"queue": "housekeeping"},
-    },
-    # Same for the conversation_parts firehose (messaging owns its own partitioned table).
-    "messaging-ensure-partitions": {
-        "task": "messaging.ensure_partitions",
-        "schedule": crontab(hour="3", minute="5"),  # daily 03:05
-        "options": {"queue": "housekeeping"},
     },
     # Drop expired idempotency keys so the ledger stays small (RFC-002 §5.6).
     "messaging-purge-idempotency": {
@@ -146,12 +134,7 @@ celery_app.conf.beat_schedule = {
         "schedule": 30.0,  # seconds
         "options": {"queue": "housekeeping"},
     },
-    # Keep webhook_deliveries partitions ahead + drop those past the 30-day retention window.
-    "webhooks-ensure-partitions": {
-        "task": "webhooks.ensure_partitions",
-        "schedule": crontab(hour="3", minute="20"),  # daily 03:20
-        "options": {"queue": "housekeeping"},
-    },
+    # Delete webhook_deliveries rows past the 30-day retention window (row-level, post-0018).
     "webhooks-purge-deliveries": {
         "task": "webhooks.purge_deliveries",
         "schedule": crontab(hour="3", minute="25"),  # daily 03:25

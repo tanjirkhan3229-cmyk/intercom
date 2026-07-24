@@ -8,10 +8,6 @@
   chunk is moved to a per-workspace *processing* list (``LMOVE``) before the COPY and only
   deleted after commit; a crashed run recovers leftovers on the next pass (dedup is
   downstream per W3).
-- ``ensure_partitions`` (queue ``housekeeping``) — pre-creates monthly partitions T+2 months
-  ahead via the ``relay_ensure_partitions`` SECURITY DEFINER function and alerts (error log)
-  if any expected partition is still missing.
-
 Tasks are synchronous (Celery workers run sync); they use raw ``psycopg`` + sync Redis.
 Every task is idempotent (master rule 3).
 """
@@ -35,11 +31,6 @@ log = get_logger(__name__)
 
 # Rows per COPY transaction. Sized so a 10k batch lands in a handful of chunks (W3).
 DRAIN_CHUNK = 5_000
-
-# Partitioned tables the housekeeping task keeps ahead of the calendar. Extended as
-# monthly-partitioned tables land (conversation_parts/sends/message_events in later phases).
-PARTITIONED_TABLES: tuple[str, ...] = ("events",)
-PARTITION_MONTHS_AHEAD = 2
 
 _STAGE_DDL = (
     "CREATE TEMP TABLE _ev_stage ("
@@ -127,24 +118,3 @@ def drain_events() -> int:
     for workspace_id in list(cast("set[str]", redis.smembers(EVENTS_BUFFER_WORKSPACES))):
         total += _drain_workspace(redis, str(workspace_id))
     return total
-
-
-@celery_app.task(name="crm.ensure_partitions", queue="housekeeping")
-def ensure_partitions(months_ahead: int = PARTITION_MONTHS_AHEAD) -> dict[str, list[str]]:
-    """Pre-create monthly partitions T+``months_ahead`` and alert on any still missing.
-
-    Partition DDL runs via ``relay_ensure_partitions`` (SECURITY DEFINER, owned by the
-    BYPASSRLS ``migrator``, EXECUTE-granted to ``app_rw``) so the app role never needs DDL.
-    """
-    dsn = get_settings().database_url_psycopg
-    missing_by_table: dict[str, list[str]] = {}
-    with psycopg.connect(dsn, autocommit=True) as conn, conn.cursor() as cur:
-        for table in PARTITIONED_TABLES:
-            cur.execute("SELECT relay_ensure_partitions(%s, %s)", (table, months_ahead))
-            cur.execute("SELECT relay_missing_partitions(%s, %s)", (table, months_ahead))
-            missing = [str(row[0]) for row in cur.fetchall()]
-            if missing:
-                # Alert hook: a missing partition means inserts would fail — page on this.
-                log.error("crm.partitions.missing", table=table, months=missing)
-                missing_by_table[table] = missing
-    return missing_by_table

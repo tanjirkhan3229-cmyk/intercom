@@ -109,18 +109,14 @@ class Conversation(UUIDPrimaryKey, TimestampMixin, WorkspaceScoped, Base):
 class ConversationPart(Base):
     """An append-only event in a conversation thread (RFC-002 §5.3).
 
-    Monthly RANGE partitions; PK ``(created_at, id)`` (partition-key-leading). No PK ``default``
-    here — ``id``/``created_at`` are set explicitly by the service so the head update and the
-    part share one clock. RLS is enabled + forced on the partitioned parent by the migration.
+    Plain table, PK ``id`` (uuid7, time-ordered). No PK ``default`` here — ``id``/``created_at``
+    are set explicitly by the service so the head update and the part share one clock. RLS is
+    enabled + forced by the migration. (Was monthly-partitioned; de-partitioned in 0018.)
     """
 
     __tablename__ = "conversation_parts"
-    __table_args__ = (
-        sa.PrimaryKeyConstraint("created_at", "id", name="pk_conversation_parts"),
-        {"postgresql_partition_by": "RANGE (created_at)"},
-    )
 
-    id: Mapped[uuid.UUID] = mapped_column(PgUUID(as_uuid=True), nullable=False)
+    id: Mapped[uuid.UUID] = mapped_column(PgUUID(as_uuid=True), primary_key=True)
     workspace_id: Mapped[uuid.UUID] = mapped_column(PgUUID(as_uuid=True), nullable=False)
     conversation_id: Mapped[uuid.UUID] = mapped_column(PgUUID(as_uuid=True), nullable=False)
     author_kind: Mapped[str] = mapped_column(Text, nullable=False)

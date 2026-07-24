@@ -62,12 +62,13 @@ class WebhookSubscription(UUIDPrimaryKey, TimestampMixin, WorkspaceScoped, Base)
 class WebhookDelivery(Base):
     """One attempted/scheduled delivery of one event to one subscription (RFC-002 §5.6).
 
-    Monthly RANGE partitions; PK ``(created_at, id)``. ``id``/``created_at`` are set by the writer —
-    ``created_at`` is the *dispatch instant* (so rows land in the current partition, retention is by
-    dispatch age, and the 72h retry window runs from when delivery began).
-    Unique ``(created_at, subscription_id, outbox_id)`` is a best-effort same-instant guard only;
-    cross-dispatch dedupe is the Redis marker; delivery is **at-least-once** (receivers dedupe
-    on the stable event id). RLS is enabled + forced on the partitioned parent by the migration.
+    Plain table, PK ``id``. ``id``/``created_at`` are set by the writer — ``created_at`` is the
+    *dispatch instant* (retention is by dispatch age, and the 72h retry window runs from when
+    delivery began). Unique ``(created_at, subscription_id, outbox_id)`` is a best-effort
+    *same-instant* guard only (NOT an exactly-once key — a later redispatch still creates a row);
+    cross-dispatch dedupe is the Redis marker; delivery is **at-least-once** (receivers dedupe on
+    the stable event id). RLS is enabled + forced by the migration. (Was monthly-partitioned;
+    de-partitioned in 0018.)
 
     ``status`` lifecycle: pending → delivering → delivered | failed (→ retry) | exhausted
     (terminal) | skipped_breaker_open.
@@ -75,16 +76,14 @@ class WebhookDelivery(Base):
 
     __tablename__ = "webhook_deliveries"
     __table_args__ = (
-        sa.PrimaryKeyConstraint("created_at", "id", name="pk_webhook_deliveries"),
         sa.UniqueConstraint(
             "created_at", "subscription_id", "outbox_id", name="uq_webhook_deliveries_sub_outbox"
         ),
         sa.Index("webhook_deliveries_sub", "workspace_id", "subscription_id", "id"),
         sa.Index("webhook_deliveries_retry", "status", "next_attempt_at"),
-        {"postgresql_partition_by": "RANGE (created_at)"},
     )
 
-    id: Mapped[uuid.UUID] = mapped_column(PgUUID(as_uuid=True), nullable=False)
+    id: Mapped[uuid.UUID] = mapped_column(PgUUID(as_uuid=True), primary_key=True)
     workspace_id: Mapped[uuid.UUID] = mapped_column(PgUUID(as_uuid=True), nullable=False)
     subscription_id: Mapped[uuid.UUID] = mapped_column(PgUUID(as_uuid=True), nullable=False)
     outbox_id: Mapped[uuid.UUID] = mapped_column(PgUUID(as_uuid=True), nullable=False)

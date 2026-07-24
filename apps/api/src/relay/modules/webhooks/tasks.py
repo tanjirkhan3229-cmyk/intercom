@@ -6,8 +6,8 @@
   a 72h ETA would pin a message in the broker for three days.
 - ``webhooks.scan_retries``     (queue ``housekeeping``) — claim due deliveries across workspaces
   (SECURITY DEFINER visibility-timeout claim) and re-enqueue ``deliver``.
-- ``webhooks.ensure_partitions``/``purge_deliveries`` (queue ``housekeeping``) — monthly partition
-  automation + 30-day retention drop.
+- ``webhooks.purge_deliveries`` (queue ``housekeeping``) — row-level DELETE of deliveries past the
+  30-day retention window (``relay_purge_webhook_deliveries``; de-partitioned in 0018).
 
 Tasks are synchronous (Celery workers run sync): raw ``psycopg`` + sync Redis, each idempotent.
 The read (under RLS) commits before the HTTP call so no DB transaction is held during the ≤10s
@@ -384,31 +384,20 @@ def scan_retries() -> int:
     return len(rows)
 
 
-@celery_app.task(name="webhooks.ensure_partitions", queue="housekeeping")
-def ensure_partitions(months_ahead: int = 2) -> list[str]:
-    """Pre-create monthly ``webhook_deliveries`` partitions and alert on any still missing."""
-    with (
-        psycopg.connect(get_settings().database_url_psycopg, autocommit=True) as conn,
-        conn.cursor() as cur,
-    ):
-        cur.execute("SELECT relay_ensure_partitions('webhook_deliveries', %s)", (months_ahead,))
-        cur.execute("SELECT relay_missing_partitions('webhook_deliveries', %s)", (months_ahead,))
-        missing = [str(r[0]) for r in cur.fetchall()]
-    if missing:
-        log.error("webhooks.partitions.missing", months=missing)
-    return missing
-
-
 @celery_app.task(name="webhooks.purge_deliveries", queue="housekeeping")
 def purge_deliveries(keep_days: int = 30) -> int:
-    """Drop ``webhook_deliveries`` partitions older than ``keep_days`` (30-day retention)."""
+    """Delete ``webhook_deliveries`` rows older than ``keep_days`` (30-day retention).
+
+    Row-level ``DELETE`` via the ``relay_purge_webhook_deliveries`` SECURITY DEFINER function
+    (BYPASSRLS owner → workspace-agnostic sweep; EXECUTE-granted to ``app_rw``). Replaced the
+    drop-old-partition path when the table was de-partitioned (0018)."""
     with (
         psycopg.connect(get_settings().database_url_psycopg, autocommit=True) as conn,
         conn.cursor() as cur,
     ):
-        cur.execute("SELECT relay_drop_old_partitions('webhook_deliveries', %s)", (keep_days,))
+        cur.execute("SELECT relay_purge_webhook_deliveries(%s)", (keep_days,))
         result = cur.fetchone()
-    dropped = int(result[0]) if result else 0
-    if dropped:
-        log.info("webhooks.purge.dropped_partitions", dropped=dropped)
-    return dropped
+    deleted = int(result[0]) if result else 0
+    if deleted:
+        log.info("webhooks.purge.deleted_rows", deleted=deleted)
+    return deleted

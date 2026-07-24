@@ -145,17 +145,17 @@ CREATE TABLE conversation_parts (
   attachments     jsonb NOT NULL DEFAULT '[]', -- S3 refs only, never bytes
   channel_meta    jsonb NOT NULL DEFAULT '{}', -- Message-ID, wa ids, etc.
   created_at      timestamptz NOT NULL DEFAULT now(),
-  PRIMARY KEY (created_at, id)                 -- partition-key-leading PK
-) PARTITION BY RANGE (created_at);             -- monthly partitions, pre-created +2 ahead
+  PRIMARY KEY (id)                             -- plain table (de-partitioned in 0018)
+);
 
 CREATE INDEX parts_thread ON conversation_parts (conversation_id, id);          -- R2 keyset
-CREATE INDEX parts_fts    ON conversation_parts USING gin (body_tsv);           -- R8 (per partition)
+CREATE INDEX parts_fts    ON conversation_parts USING gin (body_tsv);           -- R8
 -- Write amplification budget for W1: PK + 2 indexes ≈ 4 index writes/insert. Acceptable at 120 TPS.
 ```
 
 W1 is one transaction: insert part → update conversation head (`last_part_at`, `waiting_since`, counters) → insert `outbox` row. No cross-table fan-out inside the txn; everything else is outbox-driven (RFC-001 §6.5).
 
-**Partition lifecycle:** monthly; `housekeeping` pre-creates T+2 months (alerted if missing); partitions > 18 mo detached → exported to S3 Parquet (Athena-queryable for compliance/export) → dropped. Retention per plan/GDPR overridable per workspace via scrub jobs rather than partition drops (pooled tenancy tradeoff, §11.1).
+**Retention (de-partitioned in 0018):** `conversation_parts` is a plain table — the per-month child tables were premature at current volume and cluttered the schema. Retention/GDPR is per-workspace scrub jobs (§11.1). If the message firehose later justifies it, re-introduce monthly partitioning for this table deliberately (0018's `downgrade` restores the partitioned shape).
 
 ### 5.4 CRM: contacts, attributes, events, segments
 
@@ -198,9 +198,9 @@ CREATE TABLE events (
   name         text NOT NULL,
   properties   jsonb NOT NULL DEFAULT '{}',
   created_at   timestamptz NOT NULL,
-  PRIMARY KEY (created_at, id)
-) PARTITION BY RANGE (created_at);               -- monthly; BRIN instead of fat B-trees:
-CREATE INDEX events_brin ON events USING brin (created_at);
+  PRIMARY KEY (id)                               -- plain table (de-partitioned in 0018)
+);
+CREATE INDEX events_brin ON events USING brin (created_at);  -- BRIN instead of fat B-trees
 CREATE INDEX events_contact ON events (workspace_id, contact_id, name, created_at); -- R3/R5 window queries
 ```
 
@@ -210,9 +210,10 @@ Loaded by COPY batches (W3). **P0.2 clarification — COPY under RLS:** PostgreS
 transaction, `SET LOCAL app.ws` → `CREATE TEMP TABLE … ON COMMIT DROP` → `COPY … FROM STDIN`
 (temp tables have no RLS) → `INSERT INTO events SELECT …` through the parent (RLS `WITH CHECK`
 enforces isolation on the write path too). RLS stays enabled+forced; no BYPASSRLS runtime role
-is added. Monthly partitions are pre-created T+2 by `relay_ensure_partitions(parent, n)` —
-a SECURITY DEFINER function owned by `migrator`, EXECUTE-granted to `app_rw` — called by the
-`housekeeping` task (so app_rw never needs DDL); `relay_missing_partitions` drives the alert.
+is added. **De-partitioned in 0018** — `events` is a plain table (the monthly child tables were
+premature at current volume; the `relay_ensure_partitions` housekeeping is removed). If the
+>1.5B/mo envelope ever lands, graduate to ClickHouse (below) rather than re-adding Postgres
+partitions.
 **Segments never scan raw events:** `event_rollups (workspace_id, contact_id, event_name, day, count)` (daily, upserted by `analytics` workers) + `contacts.custom` carry R5; a segment is a stored predicate AST (JSONB) compiled to SQL over `contacts` + rollups. Membership for messaging is snapshotted at send time (W5) — no drifting mid-campaign.
 
 ### 5.5 Knowledge & retrieval (feeds RFC-003)
@@ -260,7 +261,7 @@ R7 gotcha, named: HNSW is a **global** index; per-workspace filtering post-filte
 - `campaigns` / `campaign_versions` / `series` (graph JSONB) / `sends` (**UNIQUE `(campaign_id, contact_id)`** — re-fires safe; monthly partitions) / `message_events` (delivery lifecycle, monthly partitions, rolled into `campaign_stats`) / `subscription_types` + `consents` (per contact × type, audit-trailed).
 - **Channels — email adapter (P0.7):** `verified_domains` (per-workspace sending domains; a GLOBAL partial-unique `(domain) WHERE status='verified'` makes inbound routing deterministic across tenants) / `channel_accounts` (inbound support address, globally unique; `conversations.channel_account_id` FK, added in the P0.7 expand migration) / `email_messages` (inbound+outbound ledger — **UNIQUE `(workspace_id, message_id)`** is the RFC-822 dedupe/threading key, **UNIQUE `(workspace_id, part_id)`** the outbound exactly-once gate) / `suppressions` (**UNIQUE `(workspace_id, email)`**; hard bounce/complaint/manual — sends blocked at the service layer) / `email_delivery_events` (delivery audit). Global infra (no RLS, like `outbox`): `channels_inbound_dedupe (sns_message_id)` — the primary pre-tenancy idempotency gate — and `channels_ingest_failures` (DLQ replay log). Pre-tenancy routing via SECURITY-DEFINER resolvers (`channels_resolve_inbound_address` / `channels_resolve_outbound_message` / `channels_resolve_account_workspace` / `channels_pending_domains`), mirroring `identity_admin_workspaces`. **Deviations:** (a) `email_delivery_events` is non-partitioned for P0.7's low volume — the partitioned campaign-scale `message_events` above stays with the outbound module (P1.8); (b) reply tokens are **stateless HMAC** plus-addresses (RFC-001 §6.6), so there is no `reply_tokens` table.
 - **Mobile push (P1.10):** `device_tokens` (an iOS/Android SDK's APNs/FCM token for a contact; **UNIQUE `(workspace_id, token)`** so registration is a rotation-safe upsert; `status` flips `active`→`stale` on provider rejection; fan-out lookup index `(workspace_id, contact_id, status)`) / `push_receipts` (**UNIQUE `(workspace_id, message_id, device_token_id)`** — the per-(message, device) exactly-once gate for the at-least-once push fan-out; `message_id` is a plain uuid since `conversation_parts` is partitioned). Both RLS-forced. The fan-out is a `messaging` outbox consumer (`relay push-dispatch`) → `messaging.send_push` on the `send.channels` queue → APNs/FCM (RFC-000 §2.1).
-- `webhook_subscriptions` / `webhook_deliveries` (partitioned, 30–90 d retention), `api_keys` (hashed), `oauth_apps`/`app_installs`, `audit_logs` (append-only, partitioned, no FK to allow actor deletion), `idempotency_keys (workspace_id, key, request_hash, response, expires_at)` for W1/W4 client retries.
+- `webhook_subscriptions` / `webhook_deliveries` (plain since 0018; 30-day row-level retention via `relay_purge_webhook_deliveries`), `api_keys` (hashed), `oauth_apps`/`app_installs`, `audit_logs` (append-only, partitioned, no FK to allow actor deletion), `idempotency_keys (workspace_id, key, request_hash, response, expires_at)` for W1/W4 client retries.
 - `outbox (id, aggregate, aggregate_id, seq, topic, payload jsonb, created_at, published_at)` — the RFC-001 §6.5 spine; `(published_at IS NULL)` partial index; relay deletes/archives published rows aggressively (this table must stay small and hot).
 - Billing: `plans`, `subscriptions`, `usage_records (workspace_id, meter, qty, occurred_at, source_id UNIQUE per meter)` — W8's must-not-lose path: written in the same txn as the triggering domain row (e.g. AI resolution), Stripe-metered asynchronously with reconciliation.
 - Reporting: `conversation_metrics` (1 row/conversation, upserted on close/reopen: first-response s, resolution s, handling, rating, ai_involved) + `daily_rollups (workspace, team, metric, day)` — R9 never touches raw parts.
