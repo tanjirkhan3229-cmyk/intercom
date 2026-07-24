@@ -20,4 +20,14 @@ export const qk = {
   articlesRoot: ["articles"] as const,
   article: (id: string) => ["article", id] as const,
   helpCenter: ["help-center"] as const,
+  // Workflows (P1.6). Distinct roots (not nested under ["workflow", id]) so invalidating the
+  // workflow head does NOT prefix-match and refetch the versions/runs lists.
+  workflowsRoot: ["workflows"] as const,
+  workflow: (id: string) => ["workflow", id] as const,
+  workflowVersions: (id: string) => ["workflow-versions", id] as const,
+  workflowRuns: (id: string, filters: { status?: string; versionId?: string }) =>
+    ["workflow-runs", id, filters] as const,
+  workflowRun: (runId: string) => ["workflow-run", runId] as const,
+  workflowRunSteps: (runId: string) => ["workflow-run", runId, "steps"] as const,
+  attributeDefinitions: (entity: string) => ["attribute-definitions", entity] as const,
 };
