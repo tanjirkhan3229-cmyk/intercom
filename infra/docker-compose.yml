@@ -326,6 +326,25 @@ services:
       redis-broker:
         condition: service_healthy
 
+  automation-triggers:
+    # Consumes `relay:outbox` and, for each event on a workflow trigger, creates workflow_runs +
+    # enqueues `automation.advance_run` (P1.5). Never runs the workflow itself — the executor runs
+    # on the worker tier, so a slow/looping workflow can't block the stream. Single-instance drainer.
+    build:
+      context: ..
+      dockerfile: apps/api/Dockerfile
+    environment: *api-env
+    command: ["relay", "automation-triggers"]
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+      postgres:
+        condition: service_healthy
+      redis-cache:
+        condition: service_healthy
+      redis-broker:
+        condition: service_healthy
+
 volumes:
   pgdata:
   brokerdata:

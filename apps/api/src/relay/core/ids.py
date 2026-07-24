@@ -76,7 +76,10 @@ def _b62_encode(n: int) -> str:
 def _b62_decode(s: str) -> int:
     n = 0
     for ch in s:
-        n = n * _BASE + _INDEX[ch]
+        try:
+            n = n * _BASE + _INDEX[ch]
+        except KeyError as exc:  # a non-base62 char → ValueError, so callers' `except ValueError`
+            raise ValueError(f"invalid base62 character {ch!r}") from exc
     return n
 
 
@@ -121,5 +124,9 @@ class IdPrefix:
     WEBHOOK_SUBSCRIPTION = "whk"
     WEBHOOK_DELIVERY = "whd"
     WEBHOOK_EVENT = "evt"  # opaque public event id carried in the delivered payload
+    # automation module (P1.5 — workflows)
+    WORKFLOW = "wfl"
+    WORKFLOW_VERSION = "wfv"
+    WORKFLOW_RUN = "wfr"
     # ai module (P1.2 — Neko orchestrator)
     AGENT_RUN = "run"  # one Neko turn in the agent_runs ledger (RFC-003 §3)

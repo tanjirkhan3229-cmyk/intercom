@@ -57,6 +57,7 @@ celery_app.conf.update(
         "relay.modules.webhooks.tasks",
         "relay.modules.knowledge.tasks",
         "relay.modules.ai.tasks",
+        "relay.modules.automation.tasks",
     ],
 )
 
@@ -147,6 +148,21 @@ celery_app.conf.beat_schedule = {
     "webhooks-purge-deliveries": {
         "task": "webhooks.purge_deliveries",
         "schedule": crontab(hour="3", minute="25"),  # daily 03:25
+        "options": {"queue": "housekeeping"},
+    },
+    # Claim due workflow timers (durable waits, W6) and fire them (P1.5). Tight cadence so a
+    # ``wait`` node resumes promptly; the claim is FOR UPDATE SKIP LOCKED so many beats/workers
+    # never contend.
+    "automation-scan-due-timers": {
+        "task": "automation.scan_due_timers",
+        "schedule": 10.0,  # seconds
+        "options": {"queue": "housekeeping"},
+    },
+    # Reaper: re-drive workflow runs whose in-flight message was lost (broker flush) so every run
+    # completes or parks resumably (P1.5 chaos acceptance).
+    "automation-scan-stuck-runs": {
+        "task": "automation.scan_stuck_runs",
+        "schedule": 30.0,  # seconds
         "options": {"queue": "housekeeping"},
     },
 }
