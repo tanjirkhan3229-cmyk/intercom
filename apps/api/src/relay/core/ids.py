@@ -130,3 +130,5 @@ class IdPrefix:
     WORKFLOW_RUN = "wfr"
     # ai module (P1.2 — Neko orchestrator)
     AGENT_RUN = "run"  # one Neko turn in the agent_runs ledger (RFC-003 §3)
+    # messaging module (P1.10 — mobile SDKs)
+    DEVICE = "dev"  # a registered APNs/FCM device token

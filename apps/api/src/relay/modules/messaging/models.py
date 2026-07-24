@@ -145,6 +145,73 @@ class ConversationPart(Base):
     created_at: Mapped[dt.datetime] = mapped_column(sa.DateTime(timezone=True), nullable=False)
 
 
+# --- Mobile push (P1.10) ------------------------------------------------------
+
+# Platforms an SDK registers from. Kept a closed set so a typo can't create an unroutable token.
+DEVICE_PLATFORMS: tuple[str, ...] = ("ios", "android")
+# APNs distinguishes the sandbox (debug builds) and production push hosts; FCM ignores this.
+DEVICE_ENVIRONMENTS: tuple[str, ...] = ("production", "sandbox")
+# ``stale`` = the provider reported the token dead (APNs 410 / FCM NotRegistered); skip on fan-out.
+DEVICE_STATUSES: tuple[str, ...] = ("active", "stale")
+
+_PLATFORM_CHECK = "platform IN ('ios', 'android')"
+_ENV_CHECK = "environment IN ('production', 'sandbox')"
+_STATUS_CHECK = "status IN ('active', 'stale')"
+
+
+class DeviceToken(UUIDPrimaryKey, TimestampMixin, WorkspaceScoped, Base):
+    """An APNs/FCM token an iOS/Android SDK registered for a contact (P1.10, RFC-000 §2.1).
+
+    Registration upserts on ``(workspace_id, token)`` so a rotated token just re-registers; the
+    push fan-out flips ``status`` to ``stale`` when the provider rejects it.
+    """
+
+    __tablename__ = "device_tokens"
+    __table_args__ = (
+        CheckConstraint(_PLATFORM_CHECK, name="device_token_platform_valid"),
+        CheckConstraint(_ENV_CHECK, name="device_token_environment_valid"),
+        CheckConstraint(_STATUS_CHECK, name="device_token_status_valid"),
+        UniqueConstraint("workspace_id", "token", name="uq_device_tokens_token"),
+    )
+
+    contact_id: Mapped[uuid.UUID] = mapped_column(
+        PgUUID(as_uuid=True), ForeignKey("contacts.id", ondelete="CASCADE"), nullable=False
+    )
+    platform: Mapped[str] = mapped_column(Text, nullable=False)
+    token: Mapped[str] = mapped_column(Text, nullable=False)
+    # APNs bundle id / Android package name — picks the APNs topic; null → the configured default.
+    app_id: Mapped[str | None] = mapped_column(Text, nullable=True)
+    environment: Mapped[str] = mapped_column(
+        Text, nullable=False, server_default=sa.text("'production'")
+    )
+    status: Mapped[str] = mapped_column(Text, nullable=False, server_default=sa.text("'active'"))
+    last_seen_at: Mapped[dt.datetime] = mapped_column(
+        sa.DateTime(timezone=True), nullable=False, server_default=sa.func.now()
+    )
+    updated_at: Mapped[dt.datetime] = mapped_column(
+        sa.DateTime(timezone=True), nullable=False, server_default=sa.func.now()
+    )
+
+
+class PushReceipt(UUIDPrimaryKey, TimestampMixin, WorkspaceScoped, Base):
+    """Per-(message, device) dedupe ledger: the exactly-once gate for at-least-once push fan-out
+    (master rule 3). ``message_id`` is a plain uuid (conversation_parts is partitioned, so its
+    ``id`` can't be an FK target)."""
+
+    __tablename__ = "push_receipts"
+    __table_args__ = (
+        UniqueConstraint(
+            "workspace_id", "message_id", "device_token_id", name="uq_push_receipts_dedupe"
+        ),
+    )
+
+    message_id: Mapped[uuid.UUID] = mapped_column(PgUUID(as_uuid=True), nullable=False)
+    device_token_id: Mapped[uuid.UUID] = mapped_column(
+        PgUUID(as_uuid=True), ForeignKey("device_tokens.id", ondelete="CASCADE"), nullable=False
+    )
+    provider_message_id: Mapped[str | None] = mapped_column(Text, nullable=True)
+
+
 class ConversationTag(UUIDPrimaryKey, TimestampMixin, WorkspaceScoped, Base):
     """A tag applied to a conversation (name-based; unique per conversation)."""
 

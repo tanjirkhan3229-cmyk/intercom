@@ -1,0 +1,13 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<!-- Lets the app be woken for remote (APNs) notifications. -->
+	<key>UIBackgroundModes</key>
+	<array>
+		<string>remote-notification</string>
+	</array>
+	<!-- Push also requires the "Push Notifications" capability (adds aps-environment to the
+	     app's entitlements) — enable it in Signing & Capabilities. See Example/README.md. -->
+</dict>
+</plist>
