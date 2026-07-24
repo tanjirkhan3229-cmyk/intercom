@@ -127,20 +127,18 @@ class AttributeDefinition(UUIDPrimaryKey, TimestampMixin, WorkspaceScoped, Base)
 class Event(Base):
     """Append-only analytics event (RFC-002 §5.4 — the firehose, W3).
 
-    ``bigint`` identity PK (never exposed), monthly RANGE partitions on ``created_at``,
-    BRIN on ``created_at``. No FK to contacts (append speed). Loaded by the analytics drain
-    via temp-stage COPY + INSERT…SELECT (COPY FROM is unsupported on RLS tables — the drain
-    keeps the RLS backstop by inserting through the parent under ``app.ws``). RLS is enabled
-    + forced by ``create_tenant_table`` in the migration.
+    ``bigint`` identity PK (never exposed), BRIN on ``created_at``. No FK to contacts (append
+    speed). Loaded by the analytics drain via temp-stage COPY + INSERT…SELECT (COPY FROM is
+    unsupported on RLS tables — the drain keeps the RLS backstop by inserting under ``app.ws``).
+    RLS is enabled + forced by ``create_tenant_table`` in the migration. (Was monthly-partitioned;
+    de-partitioned in 0018.)
     """
 
     __tablename__ = "events"
-    __table_args__ = (
-        sa.PrimaryKeyConstraint("created_at", "id", name="pk_events"),
-        {"postgresql_partition_by": "RANGE (created_at)"},
-    )
 
-    id: Mapped[int] = mapped_column(BigInteger, Identity(always=True), nullable=False)
+    id: Mapped[int] = mapped_column(
+        BigInteger, Identity(always=True), primary_key=True
+    )
     workspace_id: Mapped[uuid.UUID] = mapped_column(PgUUID(as_uuid=True), nullable=False)
     contact_id: Mapped[uuid.UUID] = mapped_column(PgUUID(as_uuid=True), nullable=False)
     name: Mapped[str] = mapped_column(Text, nullable=False)

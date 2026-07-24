@@ -1,8 +1,5 @@
 """Celery tasks for the ``messaging`` module.
 
-- ``ensure_partitions`` (queue ``housekeeping``) — pre-creates ``conversation_parts`` monthly
-  partitions T+2 months ahead via ``relay_ensure_partitions`` and alerts on any still missing
-  (mirrors the CRM ``events`` maintenance; each module owns its own partitioned tables).
 - ``purge_idempotency_keys`` (queue ``housekeeping``) — deletes expired ``idempotency_keys``
   rows. Runs the ``relay_purge_expired_idempotency_keys`` SECURITY DEFINER function (owned by
   the BYPASSRLS ``migrator``, EXECUTE-granted to ``app_rw``) because a workspace-agnostic sweep
@@ -30,9 +27,6 @@ from . import push_service
 
 log = get_logger(__name__)
 
-PARTITIONED_TABLES: tuple[str, ...] = ("conversation_parts",)
-PARTITION_MONTHS_AHEAD = 2
-
 _MAX_BACKOFF = 300
 
 
@@ -40,22 +34,6 @@ def _backoff(retries: int) -> int:
     """Exponential backoff with jitter (bounded), for transient push-failure retries."""
     base = min(2**retries, _MAX_BACKOFF)
     return int(base * (0.5 + random.random()))  # 0.5x-1.5x jitter
-
-
-@celery_app.task(name="messaging.ensure_partitions", queue="housekeeping")
-def ensure_partitions(months_ahead: int = PARTITION_MONTHS_AHEAD) -> dict[str, list[str]]:
-    """Pre-create ``conversation_parts`` partitions T+``months_ahead`` and alert if any missing."""
-    dsn = get_settings().database_url_psycopg
-    missing_by_table: dict[str, list[str]] = {}
-    with psycopg.connect(dsn, autocommit=True) as conn, conn.cursor() as cur:
-        for table in PARTITIONED_TABLES:
-            cur.execute("SELECT relay_ensure_partitions(%s, %s)", (table, months_ahead))
-            cur.execute("SELECT relay_missing_partitions(%s, %s)", (table, months_ahead))
-            missing = [str(row[0]) for row in cur.fetchall()]
-            if missing:
-                log.error("messaging.partitions.missing", table=table, months=missing)
-                missing_by_table[table] = missing
-    return missing_by_table
 
 
 @celery_app.task(name="messaging.purge_idempotency_keys", queue="housekeeping")
