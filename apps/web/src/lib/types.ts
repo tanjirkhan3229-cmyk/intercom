@@ -364,3 +364,120 @@ export interface SandboxTurnInput {
   message: string;
   history?: { role: "customer" | "neko"; body: string }[];
 }
+
+// --- Neko analytics (P1.4, RFC-003 §8) ----------------------------------------
+
+/** One day of Neko activity (a row of `neko_daily_rollups`). Mirrors backend `NekoDailyPoint`. */
+export interface NekoDailyPoint {
+  day: string;
+  runs_total: number;
+  runs_answered: number;
+  runs_clarify: number;
+  runs_handoff: number;
+  runs_ineligible: number;
+  runs_error: number;
+  conversations_engaged: number;
+  conversations_answered: number;
+  conversations_handoff: number;
+  resolutions: number;
+  cost_usd: number;
+  avg_latency_ms: number | null;
+}
+
+/** Window totals + derived rates (rates are null when there's nothing to divide by). */
+export interface NekoTotals {
+  runs_total: number;
+  conversations_engaged: number;
+  conversations_answered: number;
+  conversations_handoff: number;
+  resolutions: number;
+  resolution_rate: number | null;
+  deflection_rate: number | null;
+  cost_usd: number;
+  avg_cost_per_conversation: number | null;
+  avg_latency_ms: number | null;
+  handoff_reasons: Record<string, number>;
+}
+
+export interface NekoReport {
+  points: NekoDailyPoint[];
+  totals: NekoTotals;
+}
+
+/** CSAT for one cohort: rating count, average, and a 1-5 histogram. */
+export interface CsatBucket {
+  count: number;
+  average: number | null;
+  distribution: Record<string, number>;
+}
+
+/** CSAT delta (RFC-003 §8): Neko-touched conversations vs the rest. */
+export interface NekoCsatReport {
+  neko_touched: CsatBucket;
+  non_neko: CsatBucket;
+  delta: number | null;
+}
+
+/** A run inspector list row (P1.4). Mirrors backend `AgentRunSummary`. */
+export interface AgentRunSummary {
+  id: string;
+  conversation_id: string;
+  created_at: string;
+  status: string;
+  outcome: string | null;
+  handoff_reason: string | null;
+  grounding_score: number | null;
+  cost_usd: number;
+  latency_total_ms: number | null;
+  query: string;
+}
+
+/** A single run with its full replayable `trace` (RFC-003 §3). Mirrors `AgentRunDetailOut`. */
+export interface AgentRunDetail {
+  id: string;
+  conversation_id: string;
+  status: string;
+  outcome: string | null;
+  handoff_reason: string | null;
+  language: string | null;
+  safety_class: string | null;
+  query: string;
+  rewritten_query: string | null;
+  retrieved: RetrievedChunk[];
+  grounding_score: number | null;
+  prompt_hash: string | null;
+  provider: string | null;
+  models: Record<string, unknown>;
+  answer: string | null;
+  citations: string[];
+  verdict: Record<string, unknown>;
+  tokens: Record<string, unknown>;
+  cost_usd: number;
+  latency_ms: Record<string, unknown>;
+  created_at: string;
+  trace: Record<string, unknown>;
+}
+
+/** One retrieved-evidence entry inside a run's `trace` (has the chunk *content*, not just ids). */
+export interface TraceEvidence {
+  label?: string;
+  chunk_id: string;
+  source_id?: string;
+  source_kind?: string;
+  title?: string | null;
+  heading_path?: string | null;
+  content?: string;
+  score?: number;
+}
+
+export interface RunSearchParams {
+  // Index signature so it drops straight into the `query` bag + query-key factory (all scalar).
+  [k: string]: string | number | undefined;
+  q?: string;
+  outcome?: string;
+  conversation_id?: string;
+  from?: string;
+  to?: string;
+  cursor?: string;
+  limit?: number;
+}

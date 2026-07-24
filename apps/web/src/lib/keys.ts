@@ -25,4 +25,9 @@ export const qk = {
   // Neko AI agent (P1.3)
   aiSettings: ["ai-settings"] as const,
   nekoUsage: ["neko-usage"] as const,
+  // Neko analytics (P1.4)
+  nekoReport: (range: { from?: string; to?: string }) => ["neko-report", range] as const,
+  nekoCsat: (range: { from?: string; to?: string }) => ["neko-csat", range] as const,
+  runs: (params: Record<string, unknown>) => ["ai-runs", params] as const,
+  run: (id: string) => ["ai-run", id] as const,
 };

@@ -133,6 +133,13 @@ celery_app.conf.beat_schedule = {
         "schedule": crontab(minute="0"),  # top of every hour
         "options": {"queue": "analytics"},
     },
+    # Recompute Neko analytics rollups (today + yesterday) hourly from agent_runs + usage_records,
+    # so the P1.4 dashboards read the rollup and never scan the raw ledger (RFC-003 §8). Idempotent.
+    "reporting-neko-rollups": {
+        "task": "reporting.compute_neko_rollups",
+        "schedule": crontab(minute="5"),  # five past the hour (staggered off the metrics rollup)
+        "options": {"queue": "analytics"},
+    },
     # Re-enqueue due webhook retries + manual redeliveries (P0.11 durable retry ledger).
     "webhooks-scan-retries": {
         "task": "webhooks.scan_retries",

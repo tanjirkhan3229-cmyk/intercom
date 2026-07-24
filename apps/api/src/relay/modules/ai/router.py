@@ -9,13 +9,19 @@ triggered by the outbox consumer.
 
 from __future__ import annotations
 
-from fastapi import APIRouter
+import datetime as dt
+
+from fastapi import APIRouter, Query
 
 from relay.core.deps import CurrentPrincipal, SessionDep
+from relay.core.pagination import Page
 
 from . import schemas, service
 
 router = APIRouter(tags=["ai"])
+
+_FROM = Query(default=None, alias="from", description="Start date (UTC, inclusive)")
+_TO = Query(default=None, alias="to", description="End date (UTC, inclusive)")
 
 
 @router.get("/ai/settings", response_model=schemas.AiSettingsOut)
@@ -46,10 +52,37 @@ async def get_neko_usage(principal: CurrentPrincipal, session: SessionDep) -> sc
     return await service.neko_usage(session, principal)
 
 
-@router.get("/ai/runs/{run_id}", response_model=schemas.AgentRunOut)
+@router.get("/ai/runs", response_model=Page[schemas.AgentRunSummary])
+async def search_agent_runs(
+    principal: CurrentPrincipal,
+    session: SessionDep,
+    conversation_id: str | None = None,
+    outcome: str | None = None,
+    q: str | None = Query(default=None, description="Substring match on the customer's question"),
+    date_from: dt.date | None = _FROM,
+    date_to: dt.date | None = _TO,
+    cursor: str | None = None,
+    limit: int | None = None,
+) -> Page[schemas.AgentRunSummary]:
+    """Run inspector search (RFC-003 §8): newest-first, keyset-paginated completed turns, filterable
+    by conversation, outcome, question substring, and UTC date range."""
+    return await service.search_runs(
+        session,
+        principal,
+        conversation_id=conversation_id,
+        outcome=outcome,
+        q=q,
+        date_from=date_from,
+        date_to=date_to,
+        cursor=cursor,
+        limit=limit,
+    )
+
+
+@router.get("/ai/runs/{run_id}", response_model=schemas.AgentRunDetailOut)
 async def get_agent_run(
     run_id: str, principal: CurrentPrincipal, session: SessionDep
-) -> schemas.AgentRunOut:
+) -> schemas.AgentRunDetailOut:
     return await service.get_run(session, principal, run_id)
 
 

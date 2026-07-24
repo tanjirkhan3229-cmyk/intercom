@@ -17,6 +17,7 @@ customer, who can always ask for a human.
 
 from __future__ import annotations
 
+import datetime as dt
 import uuid
 from dataclasses import dataclass, field
 from decimal import Decimal
@@ -219,3 +220,40 @@ async def list_runs(
         .limit(limit)
     )
     return list(rows.all())
+
+
+async def search_runs(
+    session: AsyncSession,
+    *,
+    conversation_id: uuid.UUID | None = None,
+    outcome: str | None = None,
+    query_text: str | None = None,
+    created_from: dt.datetime | None = None,
+    created_to: dt.datetime | None = None,
+    cursor_id: uuid.UUID | None = None,
+    limit: int = 50,
+) -> list[AgentRun]:
+    """The run-inspector's workspace-wide search (P1.4, RFC-003 §8). Completed turns newest-first,
+    keyset-paginated on the uuid7 PK (``id`` is time-ordered, so ``id < cursor`` walks older). RLS
+    scopes to the caller's workspace; the ``(workspace_id, id)`` index serves the ordered scan.
+
+    Fetch ``limit + 1`` so the caller can detect a further page. ``query_text`` is a substring
+    match on the customer's question.
+    """
+    stmt = select(AgentRun).where(AgentRun.status == "complete")
+    if conversation_id is not None:
+        stmt = stmt.where(AgentRun.conversation_id == conversation_id)
+    if outcome is not None:
+        stmt = stmt.where(AgentRun.outcome == outcome)
+    if query_text:
+        # ponytail: ILIKE substring, no trigram index — fine at v0 volumes (RLS-scoped to one
+        # workspace's runs). Add a pg_trgm GIN index if per-workspace ledgers get large.
+        stmt = stmt.where(AgentRun.query.ilike(f"%{query_text}%"))
+    if created_from is not None:
+        stmt = stmt.where(AgentRun.created_at >= created_from)
+    if created_to is not None:
+        stmt = stmt.where(AgentRun.created_at < created_to)
+    if cursor_id is not None:
+        stmt = stmt.where(AgentRun.id < cursor_id)
+    stmt = stmt.order_by(AgentRun.id.desc()).limit(limit + 1)
+    return list((await session.scalars(stmt)).all())

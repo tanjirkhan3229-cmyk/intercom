@@ -46,3 +46,29 @@ def compute_daily_rollups(day: str | None = None) -> dict[str, int]:
             written[target.isoformat()] = int(row[0]) if row else 0
     log.info("reporting.rollups.computed", days=written)
     return written
+
+
+@celery_app.task(name="reporting.compute_neko_rollups", queue="analytics")
+def compute_neko_rollups(day: str | None = None) -> dict[str, int]:
+    """Recompute ``neko_daily_rollups`` for ``day`` (ISO), or today + yesterday (UTC) by default.
+
+    Feeds the P1.4 Neko analytics dashboards from ``agent_runs`` + ``usage_records`` so they never
+    scan the raw ledger (RFC-003 §8). Same shape/idempotency as :func:`compute_daily_rollups`:
+    ``relay_neko_rollup``'s ``ON CONFLICT DO UPDATE`` recomputes identical values. Today + yesterday
+    by default so a late claw-back (a reopen on a prior resolution) is picked up on its own day.
+    """
+    if day is not None:
+        days = [dt.date.fromisoformat(day)]
+    else:
+        today = dt.datetime.now(dt.UTC).date()
+        days = [today, today - dt.timedelta(days=1)]
+
+    dsn = get_settings().database_url_psycopg
+    written: dict[str, int] = {}
+    with psycopg.connect(dsn, autocommit=True) as conn, conn.cursor() as cur:
+        for target in days:
+            cur.execute("SELECT relay_neko_rollup(%s)", (target,))
+            row = cur.fetchone()
+            written[target.isoformat()] = int(row[0]) if row else 0
+    log.info("reporting.neko_rollups.computed", days=written)
+    return written

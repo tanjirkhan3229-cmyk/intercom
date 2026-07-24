@@ -1,6 +1,8 @@
 import { RelayClient, RelayApiError } from "@relay/sdk-ts";
 import type { Page } from "@relay/shared";
 import type {
+  AgentRunDetail,
+  AgentRunSummary,
   AiSettings,
   AiSettingsInput,
   Article,
@@ -13,8 +15,11 @@ import type {
   ContactEvent,
   HelpCenterConfig,
   HelpCenterInput,
+  NekoCsatReport,
+  NekoReport,
   NekoUsage,
   Part,
+  RunSearchParams,
   SandboxTurn,
   SandboxTurnInput,
   SavedReply,
@@ -289,5 +294,19 @@ export class RelayApi {
   }
   previewNeko(input: SandboxTurnInput): Promise<SandboxTurn> {
     return this.client.request<SandboxTurn>("/v0/ai/preview", { method: "POST", body: input });
+  }
+
+  // --- Neko analytics (P1.4) --------------------------------------------------
+  getNekoReport(range: { from?: string; to?: string } = {}): Promise<NekoReport> {
+    return this.client.request<NekoReport>("/v0/reports/neko", { query: range });
+  }
+  getNekoCsat(range: { from?: string; to?: string } = {}): Promise<NekoCsatReport> {
+    return this.client.request<NekoCsatReport>("/v0/reports/neko/csat", { query: range });
+  }
+  searchRuns(params: RunSearchParams = {}): Promise<Page<AgentRunSummary>> {
+    return this.client.request<Page<AgentRunSummary>>("/v0/ai/runs", { query: params });
+  }
+  getRun(id: string): Promise<AgentRunDetail> {
+    return this.client.request<AgentRunDetail>(`/v0/ai/runs/${id}`);
   }
 }

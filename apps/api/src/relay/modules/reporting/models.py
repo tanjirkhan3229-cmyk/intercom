@@ -24,6 +24,7 @@ from __future__ import annotations
 
 import datetime as dt
 import uuid
+from decimal import Decimal
 from typing import Any
 
 import sqlalchemy as sa
@@ -65,6 +66,11 @@ class ConversationMetric(UUIDPrimaryKey, TimestampMixin, WorkspaceScoped, Base):
     replies_count: Mapped[int] = mapped_column(Integer, nullable=False, server_default=sa.text("0"))
     rating: Mapped[int | None] = mapped_column(Integer, nullable=True)
     rated_at: Mapped[dt.datetime | None] = mapped_column(sa.DateTime(timezone=True), nullable=True)
+    # True once Neko authored any part in the conversation (RFC-002 §5.6 ``ai_involved``). Powers
+    # the CSAT-delta report (Neko-touched vs not, RFC-003 §8) — folded by the reducer, never a scan.
+    ai_involved: Mapped[bool] = mapped_column(
+        sa.Boolean, nullable=False, server_default=sa.text("false")
+    )
     # Max per-aggregate outbox ``seq`` folded into this row — the idempotent-replay watermark.
     last_seq: Mapped[int] = mapped_column(BigInteger, nullable=False, server_default=sa.text("0"))
 
@@ -106,4 +112,56 @@ class DailyRollup(UUIDPrimaryKey, TimestampMixin, WorkspaceScoped, Base):
     rating_sum: Mapped[int] = mapped_column(BigInteger, nullable=False, server_default=sa.text("0"))
     rating_histogram: Mapped[dict[str, Any]] = mapped_column(
         JSONB, nullable=False, server_default=sa.text("'{}'::jsonb")
+    )
+
+
+class NekoDailyRollup(UUIDPrimaryKey, TimestampMixin, WorkspaceScoped, Base):
+    """Per ``(workspace, day)`` Neko aggregate for the P1.4 analytics dashboards (RFC-003 §8).
+
+    Recomputed idempotently by ``relay_neko_rollup`` (the ``reporting.compute_neko_rollups`` task)
+    from ``agent_runs`` — so the dashboards never scan the raw ledger (P1.4 acceptance). Counts and
+    sums compose across days by summation; ``handoff_reasons`` is a per-reason histogram (merges).
+    ``resolutions`` is the billing meter's net ``SUM(qty)`` (from ``usage_records``), so the figure
+    reconciles with what Stripe is billed — net of claw-backs (RFC-003 §8). Neko is not team-scoped,
+    so the grain is ``(workspace, day)`` (no ``team_id``, unlike ``daily_rollups``)."""
+
+    __tablename__ = "neko_daily_rollups"
+    __table_args__ = (
+        UniqueConstraint("workspace_id", "day", name="uq_neko_daily_rollups_workspace_id_day"),
+    )
+
+    day: Mapped[dt.date] = mapped_column(sa.Date(), nullable=False)
+
+    runs_total: Mapped[int] = mapped_column(Integer, nullable=False, server_default=sa.text("0"))
+    runs_answered: Mapped[int] = mapped_column(Integer, nullable=False, server_default=sa.text("0"))
+    runs_clarify: Mapped[int] = mapped_column(Integer, nullable=False, server_default=sa.text("0"))
+    runs_handoff: Mapped[int] = mapped_column(Integer, nullable=False, server_default=sa.text("0"))
+    runs_ineligible: Mapped[int] = mapped_column(
+        Integer, nullable=False, server_default=sa.text("0")
+    )
+    runs_error: Mapped[int] = mapped_column(Integer, nullable=False, server_default=sa.text("0"))
+
+    conversations_engaged: Mapped[int] = mapped_column(
+        Integer, nullable=False, server_default=sa.text("0")
+    )
+    conversations_answered: Mapped[int] = mapped_column(
+        Integer, nullable=False, server_default=sa.text("0")
+    )
+    conversations_handoff: Mapped[int] = mapped_column(
+        Integer, nullable=False, server_default=sa.text("0")
+    )
+
+    cost_usd_sum: Mapped[float] = mapped_column(
+        sa.Float, nullable=False, server_default=sa.text("0")
+    )
+    latency_ms_sum: Mapped[float] = mapped_column(
+        sa.Float, nullable=False, server_default=sa.text("0")
+    )
+    latency_count: Mapped[int] = mapped_column(Integer, nullable=False, server_default=sa.text("0"))
+    handoff_reasons: Mapped[dict[str, Any]] = mapped_column(
+        JSONB, nullable=False, server_default=sa.text("'{}'::jsonb")
+    )
+    # Net of claw-backs; Numeric mirrors ``usage_records.qty`` so billing reconciliation is exact.
+    resolutions: Mapped[Decimal] = mapped_column(
+        sa.Numeric, nullable=False, server_default=sa.text("0")
     )

@@ -13,6 +13,7 @@ Three responsibilities:
 
 from __future__ import annotations
 
+import datetime as dt
 import uuid
 from typing import Any
 
@@ -22,6 +23,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from relay.core.errors import NotFoundError, ValidationError
 from relay.core.ids import IdPrefix, decode_public_id, encode_public_id, uuid7
+from relay.core.pagination import Page, clamp_limit
 from relay.core.principal import Principal
 from relay.core.rbac import Role, authorize
 from relay.modules.ai import ledger, metering, prompts, schemas
@@ -217,14 +219,35 @@ def _run_out(run: AgentRun) -> schemas.AgentRunOut:
     )
 
 
+def _run_detail(run: AgentRun) -> schemas.AgentRunDetailOut:
+    """The full run incl. the replayable ``trace`` (retrieved evidence content) — the inspector's
+    "why did Neko say X" payload (P1.4)."""
+    return schemas.AgentRunDetailOut(**_run_out(run).model_dump(), trace=run.trace)
+
+
+def _run_summary(run: AgentRun) -> schemas.AgentRunSummary:
+    return schemas.AgentRunSummary(
+        id=encode_public_id(IdPrefix.AGENT_RUN, run.id),
+        conversation_id=encode_public_id(IdPrefix.CONVERSATION, run.conversation_id),
+        created_at=run.created_at,
+        status=run.status,
+        outcome=run.outcome,
+        handoff_reason=run.handoff_reason,
+        grounding_score=run.grounding_score,
+        cost_usd=run.cost_usd,
+        latency_total_ms=run.latency_ms.get("total") if isinstance(run.latency_ms, dict) else None,
+        query=run.query,
+    )
+
+
 async def get_run(
     session: AsyncSession, principal: Principal, run_public_id: str
-) -> schemas.AgentRunOut:
+) -> schemas.AgentRunDetailOut:
     authorize(principal, min_role=Role.AGENT)
     run = await ledger.get_run(session, _decode_or_404(IdPrefix.AGENT_RUN, run_public_id, "run"))
     if run is None:  # RLS-scoped: another tenant's id is a clean 404
         raise NotFoundError("run not found")
-    return _run_out(run)
+    return _run_detail(run)
 
 
 async def list_runs(
@@ -233,6 +256,62 @@ async def list_runs(
     authorize(principal, min_role=Role.AGENT)
     cid = _decode_or_404(IdPrefix.CONVERSATION, conversation_public_id, "conversation")
     return [_run_out(r) for r in await ledger.list_runs(session, cid, limit=limit)]
+
+
+def _day_bounds(
+    date_from: dt.date | None, date_to: dt.date | None
+) -> tuple[dt.datetime | None, dt.datetime | None]:
+    """UTC half-open ``[from 00:00, to+1 00:00)`` datetimes for a run's ``created_at`` filter."""
+    frm = dt.datetime.combine(date_from, dt.time.min, tzinfo=dt.UTC) if date_from else None
+    to = (
+        dt.datetime.combine(date_to + dt.timedelta(days=1), dt.time.min, tzinfo=dt.UTC)
+        if date_to
+        else None
+    )
+    return frm, to
+
+
+async def search_runs(
+    session: AsyncSession,
+    principal: Principal,
+    *,
+    conversation_id: str | None = None,
+    outcome: str | None = None,
+    q: str | None = None,
+    date_from: dt.date | None = None,
+    date_to: dt.date | None = None,
+    cursor: str | None = None,
+    limit: int | None = None,
+) -> Page[schemas.AgentRunSummary]:
+    """Run-inspector search (P1.4, RFC-003 §8): completed turns across the workspace, newest-first,
+    keyset-paginated. Filterable by conversation, outcome, a question substring, and a UTC date
+    range. RLS scopes to the caller's workspace, so a bad conversation/cursor id yields an empty
+    page rather than leaking another tenant's runs."""
+    authorize(principal, min_role=Role.AGENT)
+    n = clamp_limit(limit)
+    cid = (
+        _decode_or_404(IdPrefix.CONVERSATION, conversation_id, "conversation")
+        if conversation_id
+        else None
+    )
+    cursor_id = _decode_or_404(IdPrefix.AGENT_RUN, cursor, "cursor") if cursor else None
+    created_from, created_to = _day_bounds(date_from, date_to)
+
+    rows = await ledger.search_runs(
+        session,
+        conversation_id=cid,
+        outcome=outcome,
+        query_text=q,
+        created_from=created_from,
+        created_to=created_to,
+        cursor_id=cursor_id,
+        limit=n,
+    )
+    next_cursor = None
+    if len(rows) > n:
+        rows = rows[:n]
+        next_cursor = encode_public_id(IdPrefix.AGENT_RUN, rows[-1].id)
+    return Page(items=[_run_summary(r) for r in rows], next_cursor=next_cursor)
 
 
 # --- Replay (RFC-003 §8 — "reconstructs from agent_runs") ---------------------

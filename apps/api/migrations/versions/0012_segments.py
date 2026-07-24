@@ -1,7 +1,7 @@
 """segments: event_rollups + segments + segment_members + rollup/enumerate functions
 
 Revision ID: 0012_segments
-Revises: 0011_outbound
+Revises: 0011_neko_metering
 Create Date: 2026-07-24
 
 P1.9 — RFC-002 §5.4 (segments, rollups). Three tenant tables (RLS enabled + FORCED via
@@ -33,7 +33,7 @@ from sqlalchemy.dialects import postgresql as pg
 from relay.core.rls import create_tenant_table
 
 revision: str = "0012_segments"
-down_revision: str | None = "0011_outbound"
+down_revision: str | None = "0011_neko_metering"
 branch_labels: str | Sequence[str] | None = None
 depends_on: str | Sequence[str] | None = None
 

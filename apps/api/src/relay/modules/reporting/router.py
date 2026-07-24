@@ -62,3 +62,26 @@ async def csat(
 @router.get("/reports/queue", response_model=schemas.QueueReport)
 async def queue(principal: CurrentPrincipal, session: SessionDep) -> schemas.QueueReport:
     return await service.queue(session, principal)
+
+
+@router.get("/reports/neko", response_model=schemas.NekoReport)
+async def neko(
+    principal: CurrentPrincipal,
+    session: SessionDep,
+    date_from: dt.date | None = _FROM,
+    date_to: dt.date | None = _TO,
+) -> schemas.NekoReport:
+    """Neko analytics: resolution/deflection/cost/latency over time + handoff-reasons breakdown
+    (RFC-003 §8). Reads ``neko_daily_rollups`` — never the raw ``agent_runs`` ledger."""
+    return await service.neko(session, principal, date_from=date_from, date_to=date_to)
+
+
+@router.get("/reports/neko/csat", response_model=schemas.NekoCsatReport)
+async def neko_csat(
+    principal: CurrentPrincipal,
+    session: SessionDep,
+    date_from: dt.date | None = _FROM,
+    date_to: dt.date | None = _TO,
+) -> schemas.NekoCsatReport:
+    """CSAT delta (RFC-003 §8): Neko-touched conversations vs the rest, over the window."""
+    return await service.neko_csat(session, principal, date_from=date_from, date_to=date_to)
