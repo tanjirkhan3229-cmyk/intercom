@@ -13,6 +13,8 @@ from __future__ import annotations
 
 import datetime as dt
 import uuid
+from collections.abc import Sequence
+from typing import Any
 
 import sqlalchemy as sa
 from sqlalchemy import func, select
@@ -150,6 +152,70 @@ async def csat(
             distribution[str(star)] = distribution.get(str(star), 0) + int(n)
     average = round(total / count, 3) if count else None
     return schemas.CsatReport(count=count, average=average, distribution=distribution)
+
+
+def _rated_day() -> sa.ColumnElement[dt.date]:
+    """``rated_at`` bucketed to a UTC calendar day (CSAT is windowed by when it was rated)."""
+    return sa.cast(sa.func.timezone("UTC", ConversationMetric.rated_at), sa.Date)
+
+
+async def csat_breakdown(
+    session: AsyncSession,
+    principal: Principal,
+    *,
+    date_from: dt.date | None = None,
+    date_to: dt.date | None = None,
+) -> schemas.CsatBreakdownReport:
+    """CSAT count + average grouped by team and by agent over the window (P1.7). Reads
+    ``conversation_metrics`` (a projection, never ``conversation_parts``); the ``team_id`` /
+    ``assignee_id`` reflect the conversation's current owner."""
+    authorize(principal, min_role=Role.AGENT)
+    frm, to = _range(date_from, date_to)
+    where = (
+        ConversationMetric.rating.is_not(None),
+        _rated_day() >= frm,
+        _rated_day() <= to,
+    )
+
+    def _groups(rows: Sequence[Any], prefix: str) -> list[schemas.CsatGroup]:
+        groups: list[schemas.CsatGroup] = []
+        for key_id, count, total in rows:
+            n = int(count)
+            groups.append(
+                schemas.CsatGroup(
+                    key=encode_public_id(prefix, key_id) if key_id is not None else None,
+                    count=n,
+                    average=round(int(total or 0) / n, 3) if n else None,
+                )
+            )
+        return groups
+
+    team_rows = (
+        await session.execute(
+            select(
+                ConversationMetric.team_id,
+                func.count(ConversationMetric.rating),
+                func.sum(ConversationMetric.rating),
+            )
+            .where(*where)
+            .group_by(ConversationMetric.team_id)
+        )
+    ).all()
+    agent_rows = (
+        await session.execute(
+            select(
+                ConversationMetric.assignee_id,
+                func.count(ConversationMetric.rating),
+                func.sum(ConversationMetric.rating),
+            )
+            .where(*where)
+            .group_by(ConversationMetric.assignee_id)
+        )
+    ).all()
+    return schemas.CsatBreakdownReport(
+        by_team=_groups(team_rows, IdPrefix.TEAM),
+        by_agent=_groups(agent_rows, IdPrefix.ADMIN),
+    )
 
 
 async def queue(session: AsyncSession, principal: Principal) -> schemas.QueueReport:

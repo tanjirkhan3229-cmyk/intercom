@@ -63,6 +63,13 @@ def _reporting_metrics() -> int:
     return 0
 
 
+def _sla_clock() -> int:
+    from relay.modules.messaging.sla_consumer import main as run_sla_clock
+
+    run_sla_clock()
+    return 0
+
+
 def _webhook_dispatch() -> int:
     from relay.modules.webhooks.consumer import main as run_dispatch
 
@@ -92,6 +99,7 @@ def main(argv: list[str] | None = None) -> int:
     sub.add_parser(
         "reporting-metrics", help="Run the reporting-metrics consumer (outbox → metrics)"
     )
+    sub.add_parser("sla-clock", help="Run the SLA clock consumer (outbox → SLA applied-state)")
     sub.add_parser(
         "webhook-dispatch", help="Run the webhook dispatch consumer (outbox → webhook deliveries)"
     )
@@ -112,6 +120,8 @@ def main(argv: list[str] | None = None) -> int:
         return _channels_dispatch()
     if args.command == "reporting-metrics":
         return _reporting_metrics()
+    if args.command == "sla-clock":
+        return _sla_clock()
     if args.command == "webhook-dispatch":
         return _webhook_dispatch()
     if args.command == "automation-triggers":

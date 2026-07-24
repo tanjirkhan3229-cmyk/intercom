@@ -59,6 +59,17 @@ async def csat(
     )
 
 
+@router.get("/reports/csat/breakdown", response_model=schemas.CsatBreakdownReport)
+async def csat_breakdown(
+    principal: CurrentPrincipal,
+    session: SessionDep,
+    date_from: dt.date | None = _FROM,
+    date_to: dt.date | None = _TO,
+) -> schemas.CsatBreakdownReport:
+    """CSAT broken down by team and by agent (P1.7)."""
+    return await service.csat_breakdown(session, principal, date_from=date_from, date_to=date_to)
+
+
 @router.get("/reports/queue", response_model=schemas.QueueReport)
 async def queue(principal: CurrentPrincipal, session: SessionDep) -> schemas.QueueReport:
     return await service.queue(session, principal)

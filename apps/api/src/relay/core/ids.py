@@ -127,3 +127,8 @@ class IdPrefix:
     WORKFLOW = "wfl"
     WORKFLOW_VERSION = "wfv"
     WORKFLOW_RUN = "wfr"
+    # messaging module (P1.7 — inbox v2)
+    OFFICE_HOURS_SCHEDULE = "ohs"
+    SLA_POLICY = "slp"
+    SLA_EVENT = "sae"
+    INBOX_VIEW = "viw"

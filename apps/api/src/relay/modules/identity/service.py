@@ -622,6 +622,12 @@ async def team_agent_ids(session: AsyncSession, team_id: uuid.UUID | None) -> li
     return list((await session.scalars(stmt.order_by(Membership.admin_id))).all())
 
 
+async def team_exists(session: AsyncSession, team_id: uuid.UUID) -> bool:
+    """Whether a team exists in the caller's workspace (RLS-scoped). Cross-module callers use this
+    to validate a team reference before persisting it (e.g. an SLA escalation target)."""
+    return (await session.scalar(select(Team.id).where(Team.id == team_id))) is not None
+
+
 # --- API keys -----------------------------------------------------------------
 
 

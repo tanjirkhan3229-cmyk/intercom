@@ -85,6 +85,12 @@ celery_app.conf.beat_schedule = {
         "schedule": crontab(hour="3", minute="10"),  # daily 03:10
         "options": {"queue": "housekeeping"},
     },
+    # Fire due SLA breaches (P1.7): claim due conversation_sla rows + record breach/escalation.
+    "messaging-scan-sla-breaches": {
+        "task": "messaging.scan_sla_breaches",
+        "schedule": 30.0,  # seconds
+        "options": {"queue": "housekeeping"},
+    },
     # Seat counting (RFC-002 §5.6, P0.10): daily full reconciliation + a tight poll that
     # pushes only dirty rows to Stripe, so an on-change seat add reflects within minutes
     # without ever calling Stripe from the request path.

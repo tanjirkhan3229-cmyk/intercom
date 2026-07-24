@@ -5,7 +5,7 @@ from __future__ import annotations
 import datetime as dt
 from typing import Any
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 
 _CHANNEL_PATTERN = "^(chat|email|whatsapp|messenger_fb|instagram|sms|voice|api)$"
 
@@ -204,3 +204,172 @@ class WidgetReplyIn(BaseModel):
 class WidgetRatingIn(BaseModel):
     rating: int = Field(ge=1, le=5)
     remark: str | None = None
+
+
+# --- P1.7 Office hours --------------------------------------------------------
+
+
+class OfficeHoursInterval(BaseModel):
+    """A single open span within a local day, ``HH:MM`` (00:00-24:00)."""
+
+    open: str = Field(pattern=r"^([01]\d|2[0-4]):([0-5]\d)$")
+    close: str = Field(pattern=r"^([01]\d|2[0-4]):([0-5]\d)$")
+
+
+class OfficeHoursScheduleIn(BaseModel):
+    """Create/replace a schedule. ``team_id`` omitted ⇒ the workspace default. ``weekly`` maps a
+    weekday ``"0".."6"`` (Mon=0) to its open intervals; empty ⇒ closed that day."""
+
+    team_id: str | None = None
+    timezone: str = Field(min_length=1, max_length=64)
+    weekly: dict[str, list[OfficeHoursInterval]] = Field(default_factory=dict)
+    holidays: list[str] = Field(default_factory=list)
+
+
+class OfficeHoursScheduleOut(BaseModel):
+    id: str
+    team_id: str | None
+    timezone: str
+    weekly: dict[str, list[OfficeHoursInterval]]
+    holidays: list[str]
+    created_at: dt.datetime
+    updated_at: dt.datetime
+
+
+class OfficeHoursStatusOut(BaseModel):
+    """Whether the resolved schedule (team override → workspace default) is open right now."""
+
+    has_schedule: bool
+    is_open: bool
+    timezone: str | None = None
+
+
+# --- P1.7 SLA -----------------------------------------------------------------
+
+
+class SlaEscalation(BaseModel):
+    """Breach actions. ``reassign_team_id`` routes the conversation to a team (clearing assignee);
+    ``set_priority`` flags it; ``notify`` posts a system note on the thread."""
+
+    set_priority: bool = False
+    notify: bool = False
+    reassign_team_id: str | None = None
+
+
+class SlaPolicyIn(BaseModel):
+    name: str = Field(min_length=1, max_length=255)
+    active: bool = True
+    first_response_seconds: int | None = Field(default=None, ge=1)
+    next_response_seconds: int | None = Field(default=None, ge=1)
+    resolution_seconds: int | None = Field(default=None, ge=1)
+    business_hours: bool = False
+    # A predicates AST (validated server-side); when set the policy auto-applies to matching new
+    # conversations. ``None`` ⇒ apply only manually or via the workflow ``apply_sla`` action.
+    apply_predicate: dict[str, Any] | None = None
+    escalation: SlaEscalation = Field(default_factory=SlaEscalation)
+    position: int = 0
+
+    @model_validator(mode="after")
+    def _at_least_one_target(self) -> SlaPolicyIn:
+        if (
+            self.first_response_seconds is None
+            and self.next_response_seconds is None
+            and self.resolution_seconds is None
+        ):
+            raise ValueError("an SLA policy must set at least one target")
+        return self
+
+
+class SlaPolicyOut(BaseModel):
+    id: str
+    name: str
+    active: bool
+    first_response_seconds: int | None
+    next_response_seconds: int | None
+    resolution_seconds: int | None
+    business_hours: bool
+    apply_predicate: dict[str, Any] | None
+    escalation: SlaEscalation
+    position: int
+    created_at: dt.datetime
+    updated_at: dt.datetime
+
+
+class ApplySlaIn(BaseModel):
+    policy_id: str
+
+
+class SlaTargetState(BaseModel):
+    due_at: dt.datetime | None = None
+    satisfied_at: dt.datetime | None = None
+    breached_at: dt.datetime | None = None
+
+
+class ConversationSlaOut(BaseModel):
+    conversation_id: str
+    policy_id: str
+    applied_at: dt.datetime
+    first_response: SlaTargetState
+    next_response: SlaTargetState
+    resolution: SlaTargetState
+    next_breach_at: dt.datetime | None
+    active: bool
+
+
+# --- P1.7 Custom inbox views --------------------------------------------------
+
+
+class InboxViewIn(BaseModel):
+    """A saved filter. ``filter`` is a predicates AST over conversation fields (validated on save);
+    ``team_id`` shares the view with a team (omitted ⇒ personal/workspace)."""
+
+    name: str = Field(min_length=1, max_length=255)
+    filter: dict[str, Any] = Field(default_factory=dict)
+    team_id: str | None = None
+
+
+class InboxViewOut(BaseModel):
+    id: str
+    name: str
+    filter: dict[str, Any]
+    team_id: str | None
+    created_at: dt.datetime
+    updated_at: dt.datetime
+
+
+class ViewCountOut(BaseModel):
+    count: int
+
+
+# --- P1.7 Balanced assignment (agent availability) ----------------------------
+
+
+class AgentAvailabilityIn(BaseModel):
+    away: bool = False
+    max_open: int | None = Field(default=None, ge=0)
+
+
+class AgentAvailabilityOut(BaseModel):
+    admin_id: str
+    away: bool
+    max_open: int | None
+    updated_at: dt.datetime
+
+
+class BalancedAssignIn(BaseModel):
+    team_id: str
+
+
+# --- P1.7 Collision detection (who's viewing / typing) ------------------------
+
+
+class PresenceActor(BaseModel):
+    actor_kind: str  # "admin" | "contact"
+    actor_id: str
+
+
+class ConversationPresenceOut(BaseModel):
+    """Live collision state for a conversation: who has it open + who is typing."""
+
+    viewers: list[str]  # admin public ids currently viewing
+    typers: list[PresenceActor]

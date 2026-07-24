@@ -20,7 +20,7 @@ from relay.core.ids import IdPrefix, decode_public_id
 from relay.core.pagination import Page
 from relay.settings import get_settings
 
-from . import schemas, service
+from . import assignment, office_hours, schemas, service, sla, views
 
 router = APIRouter(tags=["messaging"])
 
@@ -69,9 +69,7 @@ async def list_conversations(
     )
 
 
-@router.get(
-    "/contacts/{contact_id}/conversations", response_model=Page[schemas.ConversationOut]
-)
+@router.get("/contacts/{contact_id}/conversations", response_model=Page[schemas.ConversationOut])
 async def list_contact_conversations(
     contact_id: str,
     _principal: CurrentPrincipal,
@@ -303,6 +301,26 @@ async def typing(
     return Response(status_code=status.HTTP_204_NO_CONTENT)
 
 
+@router.post("/conversations/{conversation_id}/viewing", status_code=204)
+async def viewing(
+    conversation_id: str, principal: CurrentPrincipal, session: SessionDep
+) -> Response:
+    """Heartbeat that the agent has this conversation open (collision detection: Redis TTL +
+    a relayed ``view`` event)."""
+    await service.mark_viewing(session, principal, conversation_id)
+    return Response(status_code=status.HTTP_204_NO_CONTENT)
+
+
+@router.get(
+    "/conversations/{conversation_id}/presence", response_model=schemas.ConversationPresenceOut
+)
+async def conversation_presence(
+    conversation_id: str, principal: CurrentPrincipal, session: SessionDep
+) -> schemas.ConversationPresenceOut:
+    """Who currently has this conversation open + who is typing (the inbox soft-lock warning)."""
+    return await service.conversation_presence(session, principal, conversation_id)
+
+
 # --- Widget (messenger) BFF — end-user/contact surface (RFC-000 §2.1, RFC-001 §6.3) ----------
 #
 # ``/widget/boot`` is unauthenticated: it resolves the workspace from the public ``app_id`` and
@@ -428,3 +446,221 @@ async def widget_realtime_token(
     conversation_id: str, contact: ContactSession, session: SessionDep
 ) -> schemas.RealtimeTokenOut:
     return await service.contact_realtime_token(session, contact, conversation_id)
+
+
+# --- Office hours (P1.7) ------------------------------------------------------
+#
+# Workspace + per-team business-hours schedules. Reads are open to any agent; writes are admin-only
+# (enforced in the service ``authorize`` choke point). Upsert is a PUT keyed on (workspace, team).
+
+
+@router.get("/office-hours", response_model=list[schemas.OfficeHoursScheduleOut])
+async def list_office_hours(
+    _principal: CurrentPrincipal, session: SessionDep
+) -> list[schemas.OfficeHoursScheduleOut]:
+    return await office_hours.list_schedules(session)
+
+
+@router.get("/office-hours/status", response_model=schemas.OfficeHoursStatusOut)
+async def office_hours_status(
+    principal: CurrentPrincipal,
+    session: SessionDep,
+    team_id: str | None = Query(default=None),
+) -> schemas.OfficeHoursStatusOut:
+    """Whether the effective schedule (team override → workspace default) is open right now."""
+    return await office_hours.status(session, principal, team_id)
+
+
+@router.put("/office-hours", response_model=schemas.OfficeHoursScheduleOut)
+async def upsert_office_hours(
+    req: schemas.OfficeHoursScheduleIn,
+    principal: CurrentPrincipal,
+    session: SessionDep,
+) -> schemas.OfficeHoursScheduleOut:
+    """Create or replace a schedule (admin-only). Omit ``team_id`` for the workspace default."""
+    return await office_hours.upsert_schedule(session, principal, req)
+
+
+@router.delete("/office-hours/{schedule_id}", status_code=204)
+async def delete_office_hours(
+    schedule_id: str, principal: CurrentPrincipal, session: SessionDep
+) -> Response:
+    await office_hours.delete_schedule(session, principal, schedule_id)
+    return Response(status_code=status.HTTP_204_NO_CONTENT)
+
+
+# --- SLA policies + per-conversation SLA (P1.7) -------------------------------
+#
+# Policy CRUD is admin-only (enforced in the service ``authorize`` choke point); reads and
+# applying a policy to a conversation are agent+. Breach firing is durable (beat sweep), not here.
+
+
+@router.get("/sla-policies", response_model=list[schemas.SlaPolicyOut])
+async def list_sla_policies(
+    _principal: CurrentPrincipal, session: SessionDep
+) -> list[schemas.SlaPolicyOut]:
+    return await sla.list_policies(session)
+
+
+@router.post("/sla-policies", response_model=schemas.SlaPolicyOut, status_code=201)
+async def create_sla_policy(
+    req: schemas.SlaPolicyIn, principal: CurrentPrincipal, session: SessionDep
+) -> schemas.SlaPolicyOut:
+    return await sla.create_policy(session, principal, req)
+
+
+@router.get("/sla-policies/{policy_id}", response_model=schemas.SlaPolicyOut)
+async def get_sla_policy(
+    policy_id: str, _principal: CurrentPrincipal, session: SessionDep
+) -> schemas.SlaPolicyOut:
+    return await sla.get_policy(session, policy_id)
+
+
+@router.put("/sla-policies/{policy_id}", response_model=schemas.SlaPolicyOut)
+async def update_sla_policy(
+    policy_id: str, req: schemas.SlaPolicyIn, principal: CurrentPrincipal, session: SessionDep
+) -> schemas.SlaPolicyOut:
+    return await sla.update_policy(session, principal, policy_id, req)
+
+
+@router.delete("/sla-policies/{policy_id}", status_code=204)
+async def delete_sla_policy(
+    policy_id: str, principal: CurrentPrincipal, session: SessionDep
+) -> Response:
+    await sla.delete_policy(session, principal, policy_id)
+    return Response(status_code=status.HTTP_204_NO_CONTENT)
+
+
+@router.get("/conversations/{conversation_id}/sla", response_model=schemas.ConversationSlaOut)
+async def get_conversation_sla(
+    conversation_id: str, _principal: CurrentPrincipal, session: SessionDep
+) -> schemas.ConversationSlaOut:
+    return await sla.get_conversation_sla(session, conversation_id)
+
+
+@router.post("/conversations/{conversation_id}/sla", response_model=schemas.ConversationSlaOut)
+async def apply_conversation_sla(
+    conversation_id: str,
+    req: schemas.ApplySlaIn,
+    principal: CurrentPrincipal,
+    session: SessionDep,
+) -> schemas.ConversationSlaOut:
+    return await sla.apply_sla(session, principal, conversation_id, req)
+
+
+@router.delete("/conversations/{conversation_id}/sla", status_code=204)
+async def remove_conversation_sla(
+    conversation_id: str, principal: CurrentPrincipal, session: SessionDep
+) -> Response:
+    await sla.remove_sla(session, principal, conversation_id)
+    return Response(status_code=status.HTTP_204_NO_CONTENT)
+
+
+# --- Custom inbox views (P1.7) ------------------------------------------------
+#
+# Saved conversation filters. Any agent may create/read/update/delete a view (team-shared when
+# ``team_id`` is set); the filter is a predicates AST validated + compiled on save. Listing reuses
+# the R1 keyset ordering; the count is a short-TTL cached badge.
+
+
+@router.get("/views", response_model=list[schemas.InboxViewOut])
+async def list_views(
+    _principal: CurrentPrincipal, session: SessionDep
+) -> list[schemas.InboxViewOut]:
+    return await views.list_views(session)
+
+
+@router.post("/views", response_model=schemas.InboxViewOut, status_code=201)
+async def create_view(
+    req: schemas.InboxViewIn, principal: CurrentPrincipal, session: SessionDep
+) -> schemas.InboxViewOut:
+    return await views.create_view(session, principal, req)
+
+
+@router.get("/views/{view_id}", response_model=schemas.InboxViewOut)
+async def get_view(
+    view_id: str, _principal: CurrentPrincipal, session: SessionDep
+) -> schemas.InboxViewOut:
+    return await views.get_view(session, view_id)
+
+
+@router.put("/views/{view_id}", response_model=schemas.InboxViewOut)
+async def update_view(
+    view_id: str, req: schemas.InboxViewIn, principal: CurrentPrincipal, session: SessionDep
+) -> schemas.InboxViewOut:
+    return await views.update_view(session, principal, view_id, req)
+
+
+@router.delete("/views/{view_id}", status_code=204)
+async def delete_view(view_id: str, principal: CurrentPrincipal, session: SessionDep) -> Response:
+    await views.delete_view(session, principal, view_id)
+    return Response(status_code=status.HTTP_204_NO_CONTENT)
+
+
+@router.get("/views/{view_id}/conversations", response_model=Page[schemas.ConversationOut])
+async def list_view_conversations(
+    view_id: str,
+    _principal: CurrentPrincipal,
+    session: SessionDep,
+    cursor: str | None = None,
+    limit: int | None = Query(default=None, ge=1, le=200),
+) -> Page[schemas.ConversationOut]:
+    return await views.list_conversations_by_view(session, view_id, cursor=cursor, limit=limit)
+
+
+@router.get("/views/{view_id}/count", response_model=schemas.ViewCountOut)
+async def view_count(
+    view_id: str, _principal: CurrentPrincipal, session: SessionDep
+) -> schemas.ViewCountOut:
+    return await views.view_count(session, view_id)
+
+
+# --- Balanced assignment + agent availability (P1.7) --------------------------
+#
+# Load-aware assignment routes to the least-loaded eligible agent of a team. Availability (away /
+# capacity) is self-managed by an agent, or set by an admin for any teammate.
+
+
+@router.post(
+    "/conversations/{conversation_id}/assign/balanced", response_model=schemas.ConversationOut
+)
+@idempotent(status_code=200)
+async def assign_balanced(
+    conversation_id: str,
+    req: schemas.BalancedAssignIn,
+    request: Request,
+    principal: CurrentPrincipal,
+    session: SessionDep,
+) -> schemas.ConversationOut:
+    return await assignment.assign_balanced(session, principal, conversation_id, req)
+
+
+@router.get("/me/availability", response_model=schemas.AgentAvailabilityOut)
+async def get_my_availability(
+    principal: CurrentPrincipal, session: SessionDep
+) -> schemas.AgentAvailabilityOut:
+    return await assignment.get_my_availability(session, principal)
+
+
+@router.put("/me/availability", response_model=schemas.AgentAvailabilityOut)
+async def set_my_availability(
+    req: schemas.AgentAvailabilityIn, principal: CurrentPrincipal, session: SessionDep
+) -> schemas.AgentAvailabilityOut:
+    return await assignment.set_my_availability(session, principal, req)
+
+
+@router.get("/availability", response_model=list[schemas.AgentAvailabilityOut])
+async def list_availability(
+    _principal: CurrentPrincipal, session: SessionDep
+) -> list[schemas.AgentAvailabilityOut]:
+    return await assignment.list_availability(session)
+
+
+@router.put("/availability/{admin_id}", response_model=schemas.AgentAvailabilityOut)
+async def set_availability(
+    admin_id: str,
+    req: schemas.AgentAvailabilityIn,
+    principal: CurrentPrincipal,
+    session: SessionDep,
+) -> schemas.AgentAvailabilityOut:
+    return await assignment.set_availability(session, principal, admin_id, req)

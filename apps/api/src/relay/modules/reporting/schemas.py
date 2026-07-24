@@ -42,6 +42,22 @@ class CsatReport(BaseModel):
     distribution: dict[str, int]
 
 
+class CsatGroup(BaseModel):
+    """CSAT for one team or agent. ``key`` is the team/agent public id (``None`` = no team /
+    unassigned)."""
+
+    key: str | None
+    count: int
+    average: float | None
+
+
+class CsatBreakdownReport(BaseModel):
+    """CSAT broken down by team and by agent (P1.7) — from ``conversation_metrics``."""
+
+    by_team: list[CsatGroup]
+    by_agent: list[CsatGroup]
+
+
 class QueueReport(BaseModel):
     """Live queue monitor snapshot (cached ≤10 s; RFC-002 §2 R4/R9)."""
 

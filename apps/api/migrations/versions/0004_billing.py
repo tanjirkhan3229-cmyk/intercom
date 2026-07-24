@@ -184,9 +184,7 @@ def upgrade() -> None:
         """
     )
     op.execute("REVOKE ALL ON FUNCTION billing_workspace_by_stripe_subscription(text) FROM PUBLIC")
-    op.execute(
-        "GRANT EXECUTE ON FUNCTION billing_workspace_by_stripe_subscription(text) TO app_rw"
-    )
+    op.execute("GRANT EXECUTE ON FUNCTION billing_workspace_by_stripe_subscription(text) TO app_rw")
 
 
 def downgrade() -> None:

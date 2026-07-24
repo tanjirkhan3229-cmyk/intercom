@@ -14,9 +14,11 @@ Covers the acceptance bar:
 from __future__ import annotations
 
 import datetime as dt
+import os
 from uuid import uuid4
 
 import httpx
+import psycopg
 import pytest
 from sqlalchemy import select, text
 from sqlalchemy.exc import IntegrityError
@@ -27,6 +29,17 @@ from relay.core.ids import IdPrefix, decode_public_id
 pytestmark = pytest.mark.integration
 
 PASSWORD = "password123"
+
+
+def _analyze_as_owner(table: str) -> None:
+    """Refresh planner statistics for ``table`` as the migrator (its owner) — ``app_rw`` may not
+    ANALYZE. The integration DB is session-scoped and never ANALYZEd by tests, so after other tests
+    bulk-insert conversations the planner's stale estimates can flip an EXPLAIN plan (e.g. pick
+    ``conv_open_asgn`` + a Sort over ``conv_open_team``); production always has fresh stats. This
+    makes the plan assertion below deterministic regardless of suite order/volume."""
+    dsn = os.environ["MIGRATION_DATABASE_URL"].replace("+psycopg", "")
+    with psycopg.connect(dsn, autocommit=True) as conn:
+        conn.execute(f"ANALYZE {table}")
 
 
 async def _owner(client: httpx.AsyncClient, ws_name: str) -> tuple[str, str]:
@@ -331,9 +344,17 @@ async def test_r1_inbox_uses_partial_index_no_sort(client: httpx.AsyncClient) ->
     for _ in range(20):
         await _conversation(client, tok, team_id=team["id"])
 
+    # Fresh stats so the planner's choice is deterministic under any accumulated suite volume.
+    _analyze_as_owner("conversations")
+
     team_uuid = decode_public_id(IdPrefix.TEAM, team["id"])
     async with session_scope(decode_public_id(IdPrefix.WORKSPACE, ws)) as s:
+        # Force the planner to reveal the *ordered* index scan: with seqscan + bitmapscan off it
+        # can't fall back to a Seq Scan or an (unordered) Bitmap Index Scan + Sort, so it must use
+        # ``conv_open_team`` (which supplies the ``waiting_since`` order) — the property R1 relies
+        # on in production. Without this a bitmap scan can win on cost and add a Sort node.
         await s.execute(text("SET LOCAL enable_seqscan = off"))
+        await s.execute(text("SET LOCAL enable_bitmapscan = off"))
         rows = (
             await s.execute(
                 text(

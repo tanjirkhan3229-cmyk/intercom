@@ -69,7 +69,5 @@ async def test_download_url_rejects_foreign_workspace_key(client: httpx.AsyncCli
     assert ok.json()["url"].startswith("http")
 
     # Owner B cannot — the key is outside B's workspace prefix.
-    denied = await client.get(
-        "/v0/uploads/download-url", params={"key": key}, headers=_auth(tok_b)
-    )
+    denied = await client.get("/v0/uploads/download-url", params={"key": key}, headers=_auth(tok_b))
     assert denied.status_code == 403, denied.text

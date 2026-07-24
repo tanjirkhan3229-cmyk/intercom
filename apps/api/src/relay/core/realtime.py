@@ -41,8 +41,12 @@ _ALG = "HS256"
 # typing decays in seconds; presence is refreshed by client heartbeats.
 TYPING_TTL_SECONDS = 6
 PRESENCE_TTL_SECONDS = 30
+# "Viewing" presence powers collision detection (P1.7): who has a conversation open. Heartbeat-
+# refreshed like online presence, so a slightly-longer TTL than typing.
+VIEWING_TTL_SECONDS = 30
 _TYPING_PREFIX = "rt:typing:"
 _PRESENCE_PREFIX = "rt:presence:"
+_VIEWING_PREFIX = "rt:view:"
 
 # Reserved team tokens for inbox channels (a workspace-wide firehose + the unassigned bucket).
 INBOX_ALL = "all"
@@ -216,3 +220,45 @@ async def online_agents(workspace_public_id: str) -> list[str]:
     # ponytail: SCAN is O(online-agents) — fine at this scale; a per-workspace ZSET is the
     # upgrade if a workspace ever has thousands of simultaneously-online agents.
     return [key[len(prefix) :] async for key in redis.scan_iter(f"{prefix}*")]
+
+
+# --- Viewing (collision detection — Redis TTL + relay, P1.7) ------------------
+
+
+async def relay_viewing(conversation_public_id: str, *, admin_public_id: str) -> None:
+    """Record that an agent has a conversation open (heartbeat) and relay a ``view`` event so other
+    agents on the thread channel see the collision live. Redis-only with a TTL; never persisted."""
+    redis = get_redis()
+    await redis.set(
+        f"{_VIEWING_PREFIX}{conversation_public_id}:{admin_public_id}",
+        "1",
+        ex=VIEWING_TTL_SECONDS,
+    )
+    await _relay_best_effort(
+        conv_channel(conversation_public_id),
+        {
+            "topic": "view",
+            "conversation_id": conversation_public_id,
+            "admin_id": admin_public_id,
+            "status": "viewing",
+        },
+    )
+
+
+async def conversation_viewers(conversation_public_id: str) -> list[str]:
+    """Admin public ids currently viewing a conversation (collision detection)."""
+    redis = get_redis()
+    prefix = f"{_VIEWING_PREFIX}{conversation_public_id}:"
+    return [key[len(prefix) :] async for key in redis.scan_iter(f"{prefix}*")]
+
+
+async def conversation_typers(conversation_public_id: str) -> list[dict[str, str]]:
+    """Actors currently typing in a conversation as ``{actor_kind, actor_id}`` (agents/contacts)."""
+    redis = get_redis()
+    prefix = f"{_TYPING_PREFIX}{conversation_public_id}:"
+    typers: list[dict[str, str]] = []
+    async for key in redis.scan_iter(f"{prefix}*"):
+        actor_kind = await redis.get(key)
+        if actor_kind is not None:
+            typers.append({"actor_id": key[len(prefix) :], "actor_kind": actor_kind})
+    return typers

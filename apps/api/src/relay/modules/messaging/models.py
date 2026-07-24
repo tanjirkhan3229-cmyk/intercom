@@ -27,7 +27,7 @@ import uuid
 from typing import Any
 
 import sqlalchemy as sa
-from sqlalchemy import CheckConstraint, ForeignKey, Text, UniqueConstraint
+from sqlalchemy import BigInteger, CheckConstraint, ForeignKey, Integer, Text, UniqueConstraint
 from sqlalchemy.dialects.postgresql import ENUM, JSONB, TSVECTOR
 from sqlalchemy.dialects.postgresql import UUID as PgUUID
 from sqlalchemy.orm import Mapped, mapped_column
@@ -172,3 +172,233 @@ class SavedReply(UUIDPrimaryKey, TimestampMixin, WorkspaceScoped, Base):
     shortcut: Mapped[str] = mapped_column(Text, nullable=False)
     title: Mapped[str] = mapped_column(Text, nullable=False)
     body: Mapped[str] = mapped_column(Text, nullable=False)
+
+
+# --- P1.7 Inbox v2 ------------------------------------------------------------
+
+
+class OfficeHoursSchedule(UUIDPrimaryKey, TimestampMixin, WorkspaceScoped, Base):
+    """A business-hours schedule (P1.7). One workspace default (``team_id`` NULL) plus one optional
+    override per team — ``UNIQUE (workspace_id, team_id) NULLS NOT DISTINCT`` (PG16) makes the
+    default row's NULL collide with itself so an upsert is well-defined.
+
+    ``weekly`` maps a weekday string ``"0".."6"`` (Mon=0) to a list of ``{open, close}`` ``HH:MM``
+    intervals; ``holidays`` is a list of ISO dates. The service parses/validates this into a
+    :class:`~relay.modules.messaging.business_hours.BusinessHours` (RFC-002 §5.6).
+    """
+
+    __tablename__ = "office_hours_schedules"
+    __table_args__ = (
+        UniqueConstraint(
+            "workspace_id",
+            "team_id",
+            name="uq_office_hours_ws_team",
+            postgresql_nulls_not_distinct=True,
+        ),
+    )
+
+    team_id: Mapped[uuid.UUID | None] = mapped_column(
+        PgUUID(as_uuid=True), ForeignKey("teams.id", ondelete="CASCADE"), nullable=True
+    )
+    timezone: Mapped[str] = mapped_column(Text, nullable=False)
+    weekly: Mapped[dict[str, Any]] = mapped_column(
+        JSONB, nullable=False, server_default=sa.text("'{}'::jsonb")
+    )
+    holidays: Mapped[list[Any]] = mapped_column(
+        JSONB, nullable=False, server_default=sa.text("'[]'::jsonb")
+    )
+    updated_at: Mapped[dt.datetime] = mapped_column(
+        sa.DateTime(timezone=True),
+        nullable=False,
+        server_default=sa.func.now(),
+        onupdate=sa.func.now(),
+    )
+
+
+# --- P1.7 SLA policies + applied state + event log ----------------------------
+
+# SLA target keys (a policy sets a seconds budget for each it enforces; NULL = not enforced).
+SLA_TARGETS: tuple[str, ...] = ("first_response", "next_response", "resolution")
+# Lifecycle rows written to ``sla_events`` for reporting (RFC-002 §5.6).
+SLA_EVENT_KINDS: tuple[str, ...] = ("applied", "met", "breached")
+
+
+class SlaPolicy(UUIDPrimaryKey, TimestampMixin, WorkspaceScoped, Base):
+    """An SLA policy (P1.7). Targets are seconds budgets; ``business_hours`` measures against the
+    conversation's office-hours schedule (S1) rather than wall-clock. ``apply_predicate`` (a
+    predicates AST, or NULL) auto-applies the policy to matching new conversations; ``escalation``
+    is a small JSON of breach actions (``set_priority`` / ``notify`` / ``reassign_team_id``)."""
+
+    __tablename__ = "sla_policies"
+    __table_args__ = (
+        CheckConstraint(
+            "first_response_seconds IS NOT NULL OR next_response_seconds IS NOT NULL "
+            "OR resolution_seconds IS NOT NULL",
+            name="ck_sla_policies_has_target",
+        ),
+    )
+
+    name: Mapped[str] = mapped_column(Text, nullable=False)
+    active: Mapped[bool] = mapped_column(nullable=False, server_default=sa.text("true"))
+    first_response_seconds: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    next_response_seconds: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    resolution_seconds: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    business_hours: Mapped[bool] = mapped_column(nullable=False, server_default=sa.text("false"))
+    apply_predicate: Mapped[dict[str, Any] | None] = mapped_column(JSONB, nullable=True)
+    escalation: Mapped[dict[str, Any]] = mapped_column(
+        JSONB, nullable=False, server_default=sa.text("'{}'::jsonb")
+    )
+    # Precedence when several policies' predicates match a new conversation (lowest wins).
+    position: Mapped[int] = mapped_column(Integer, nullable=False, server_default=sa.text("0"))
+    created_by: Mapped[uuid.UUID | None] = mapped_column(
+        PgUUID(as_uuid=True), ForeignKey("admins.id", ondelete="SET NULL"), nullable=True
+    )
+    updated_at: Mapped[dt.datetime] = mapped_column(
+        sa.DateTime(timezone=True),
+        nullable=False,
+        server_default=sa.func.now(),
+        onupdate=sa.func.now(),
+    )
+
+
+class ConversationSla(UUIDPrimaryKey, TimestampMixin, WorkspaceScoped, Base):
+    """The applied-SLA state for one conversation (at most one policy at a time).
+
+    Each target carries ``*_due_at`` (armed), ``*_satisfied_at`` (met), ``*_breached_at`` (missed).
+    ``next_breach_at`` is the min of armed-and-unmet-and-unbreached due times — the single column
+    the breach sweep scans; ``claimed_by``/``claimed_at`` give the sweep a ``FOR UPDATE SKIP
+    LOCKED`` lease (mirrors ``timers``). ``last_seq`` is the outbox watermark for idempotent folds.
+    """
+
+    __tablename__ = "conversation_sla"
+    __table_args__ = (
+        UniqueConstraint("workspace_id", "conversation_id", name="uq_conversation_sla_conv"),
+    )
+
+    conversation_id: Mapped[uuid.UUID] = mapped_column(
+        PgUUID(as_uuid=True), ForeignKey("conversations.id", ondelete="CASCADE"), nullable=False
+    )
+    policy_id: Mapped[uuid.UUID] = mapped_column(
+        PgUUID(as_uuid=True), ForeignKey("sla_policies.id", ondelete="CASCADE"), nullable=False
+    )
+    applied_at: Mapped[dt.datetime] = mapped_column(sa.DateTime(timezone=True), nullable=False)
+
+    first_response_due_at: Mapped[dt.datetime | None] = mapped_column(
+        sa.DateTime(timezone=True), nullable=True
+    )
+    first_response_satisfied_at: Mapped[dt.datetime | None] = mapped_column(
+        sa.DateTime(timezone=True), nullable=True
+    )
+    first_response_breached_at: Mapped[dt.datetime | None] = mapped_column(
+        sa.DateTime(timezone=True), nullable=True
+    )
+    next_response_due_at: Mapped[dt.datetime | None] = mapped_column(
+        sa.DateTime(timezone=True), nullable=True
+    )
+    next_response_satisfied_at: Mapped[dt.datetime | None] = mapped_column(
+        sa.DateTime(timezone=True), nullable=True
+    )
+    next_response_breached_at: Mapped[dt.datetime | None] = mapped_column(
+        sa.DateTime(timezone=True), nullable=True
+    )
+    resolution_due_at: Mapped[dt.datetime | None] = mapped_column(
+        sa.DateTime(timezone=True), nullable=True
+    )
+    resolution_satisfied_at: Mapped[dt.datetime | None] = mapped_column(
+        sa.DateTime(timezone=True), nullable=True
+    )
+    resolution_breached_at: Mapped[dt.datetime | None] = mapped_column(
+        sa.DateTime(timezone=True), nullable=True
+    )
+
+    next_breach_at: Mapped[dt.datetime | None] = mapped_column(
+        sa.DateTime(timezone=True), nullable=True
+    )
+    active: Mapped[bool] = mapped_column(nullable=False, server_default=sa.text("true"))
+    last_seq: Mapped[int] = mapped_column(BigInteger, nullable=False, server_default=sa.text("0"))
+    claimed_by: Mapped[str | None] = mapped_column(Text, nullable=True)
+    claimed_at: Mapped[dt.datetime | None] = mapped_column(
+        sa.DateTime(timezone=True), nullable=True
+    )
+    updated_at: Mapped[dt.datetime] = mapped_column(
+        sa.DateTime(timezone=True),
+        nullable=False,
+        server_default=sa.func.now(),
+        onupdate=sa.func.now(),
+    )
+
+
+class SlaEvent(UUIDPrimaryKey, TimestampMixin, WorkspaceScoped, Base):
+    """Append-only SLA lifecycle log for reporting (applied / met / breached per target)."""
+
+    __tablename__ = "sla_events"
+    __table_args__ = (
+        CheckConstraint(
+            "target IN ('first_response', 'next_response', 'resolution')",
+            name="ck_sla_events_target_valid",
+        ),
+        CheckConstraint("kind IN ('applied', 'met', 'breached')", name="ck_sla_events_kind_valid"),
+    )
+
+    conversation_id: Mapped[uuid.UUID] = mapped_column(PgUUID(as_uuid=True), nullable=False)
+    policy_id: Mapped[uuid.UUID] = mapped_column(PgUUID(as_uuid=True), nullable=False)
+    target: Mapped[str] = mapped_column(Text, nullable=False)
+    kind: Mapped[str] = mapped_column(Text, nullable=False)
+    occurred_at: Mapped[dt.datetime] = mapped_column(sa.DateTime(timezone=True), nullable=False)
+    meta: Mapped[dict[str, Any]] = mapped_column(
+        JSONB, nullable=False, server_default=sa.text("'{}'::jsonb")
+    )
+
+
+# --- P1.7 Custom inbox views --------------------------------------------------
+
+
+class InboxView(UUIDPrimaryKey, TimestampMixin, WorkspaceScoped, Base):
+    """A saved inbox filter (P1.7). ``filter`` is a predicates AST compiled to a ``conversations``
+    WHERE clause (``views.ConversationViewResolver``). ``team_id`` set ⇒ shared with that team;
+    NULL ⇒ a personal/workspace view owned by ``created_by``."""
+
+    __tablename__ = "inbox_views"
+
+    name: Mapped[str] = mapped_column(Text, nullable=False)
+    filter: Mapped[dict[str, Any]] = mapped_column(
+        JSONB, nullable=False, server_default=sa.text("'{}'::jsonb")
+    )
+    team_id: Mapped[uuid.UUID | None] = mapped_column(
+        PgUUID(as_uuid=True), ForeignKey("teams.id", ondelete="CASCADE"), nullable=True
+    )
+    created_by: Mapped[uuid.UUID | None] = mapped_column(
+        PgUUID(as_uuid=True), ForeignKey("admins.id", ondelete="SET NULL"), nullable=True
+    )
+    updated_at: Mapped[dt.datetime] = mapped_column(
+        sa.DateTime(timezone=True),
+        nullable=False,
+        server_default=sa.func.now(),
+        onupdate=sa.func.now(),
+    )
+
+
+# --- P1.7 Agent availability (balanced assignment) ----------------------------
+
+
+class AgentAvailability(UUIDPrimaryKey, TimestampMixin, WorkspaceScoped, Base):
+    """Per-agent availability for balanced assignment (P1.7). ``away`` excludes the agent from
+    auto-assignment; ``max_open`` caps their concurrent open conversations (NULL = uncapped).
+    One row per (workspace, admin)."""
+
+    __tablename__ = "agent_availability"
+    __table_args__ = (
+        UniqueConstraint("workspace_id", "admin_id", name="uq_agent_availability_admin"),
+    )
+
+    admin_id: Mapped[uuid.UUID] = mapped_column(
+        PgUUID(as_uuid=True), ForeignKey("admins.id", ondelete="CASCADE"), nullable=False
+    )
+    away: Mapped[bool] = mapped_column(nullable=False, server_default=sa.text("false"))
+    max_open: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    updated_at: Mapped[dt.datetime] = mapped_column(
+        sa.DateTime(timezone=True),
+        nullable=False,
+        server_default=sa.func.now(),
+        onupdate=sa.func.now(),
+    )

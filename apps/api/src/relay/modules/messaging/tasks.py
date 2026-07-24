@@ -17,9 +17,12 @@ from __future__ import annotations
 
 import psycopg
 
+from relay.core.asyncio_bridge import run_coro
 from relay.core.logging import get_logger
 from relay.settings import get_settings
 from relay.worker import celery_app
+
+from . import sla
 
 log = get_logger(__name__)
 
@@ -54,3 +57,12 @@ def purge_idempotency_keys() -> int:
     if deleted:
         log.info("messaging.idempotency.purged", rows=deleted)
     return deleted
+
+
+@celery_app.task(name="messaging.scan_sla_breaches", queue="housekeeping")
+def scan_sla_breaches(max_rows: int = 500, lease_seconds: int = 120) -> int:
+    """Fire all due SLA breaches (P1.7). Claims due ``conversation_sla`` rows across workspaces
+    (``relay_claim_due_sla``, FOR UPDATE SKIP LOCKED + lease) and records breach + escalation.
+    Idempotent: an already-breached target is skipped, so redelivery/lease-reclaim never
+    double-fires. Returns the number of targets breached this run."""
+    return run_coro(sla.sweep_due_breaches(max_rows, lease_seconds))

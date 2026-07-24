@@ -988,6 +988,38 @@ async def presence_heartbeat(principal: Principal) -> None:
     )
 
 
+async def mark_viewing(session: AsyncSession, principal: Principal, public_id: str) -> None:
+    """Record that the agent has this conversation open (collision detection, P1.7). Relays a
+    ``view`` event so other agents on the thread see it live. Redis TTL only, never persisted."""
+    authorize(principal, min_role=Role.AGENT)
+    cid = _decode_or_404(IdPrefix.CONVERSATION, public_id, "conversation")
+    await _get(session, cid)  # 404 (RLS-scoped) if the conversation isn't this workspace's
+    await realtime.relay_viewing(
+        encode_public_id(IdPrefix.CONVERSATION, cid),
+        admin_public_id=encode_public_id(IdPrefix.ADMIN, principal.admin_id),
+    )
+
+
+async def conversation_presence(
+    session: AsyncSession, principal: Principal, public_id: str
+) -> schemas.ConversationPresenceOut:
+    """Who currently has this conversation open (``viewers``) and who is typing (``typers``) — the
+    inbox renders a soft-lock warning when another agent is already here."""
+    authorize(principal, min_role=Role.AGENT)
+    cid = _decode_or_404(IdPrefix.CONVERSATION, public_id, "conversation")
+    await _get(session, cid)
+    conv_pub = encode_public_id(IdPrefix.CONVERSATION, cid)
+    viewers = await realtime.conversation_viewers(conv_pub)
+    typers = await realtime.conversation_typers(conv_pub)
+    return schemas.ConversationPresenceOut(
+        viewers=viewers,
+        typers=[
+            schemas.PresenceActor(actor_kind=t["actor_kind"], actor_id=t["actor_id"])
+            for t in typers
+        ],
+    )
+
+
 # --- Widget (messenger) BFF ---------------------------------------------------
 #
 # The end-user surface for the P0.6 messenger. It composes identity (workspace settings +
@@ -1436,3 +1468,96 @@ async def system_set_ai_status(
     conv = await _load_for_update(session, conversation_id)
     conv.ai_status = status
     await session.flush()
+
+
+# --- P1.7 intra-module API (sla.py / views.py / collision.py) ---------------------------------
+# Thin public wrappers over the W1 internals above so the P1.7 submodules reuse the exact
+# head-load / part-append / outbox invariants instead of re-implementing them.
+
+
+async def load_for_update(session: AsyncSession, conversation_id: uuid.UUID) -> Conversation:
+    """Load a conversation head FOR UPDATE by uuid (NotFound if not in the caller's workspace)."""
+    return await _load_for_update(session, conversation_id)
+
+
+async def load_for_update_public(session: AsyncSession, public_id: str) -> Conversation:
+    """Decode a public id and load the head FOR UPDATE (404 if absent for the tenant)."""
+    return await _load_conv(session, public_id)
+
+
+def conversation_payload(conv: Conversation) -> dict[str, Any]:
+    """The stable conversation event payload (ids as public strings) — reused for SLA events."""
+    return _conversation_payload(conv)
+
+
+async def record_system_assignment(session: AsyncSession, conv: Conversation) -> None:
+    """Record a system-initiated (re)assignment: an ``assignment`` part + ``conversation.assigned``.
+    ``conv`` must already be FOR UPDATE-held so the outbox seq stays monotonic."""
+    await _record_system_assignment(session, conv)
+
+
+async def record_assignment(
+    session: AsyncSession, principal: Principal, conv: Conversation
+) -> None:
+    """Record an agent-attributed (re)assignment (balanced assignment, S4). ``conv`` must be FOR
+    UPDATE-held."""
+    await _record_assignment(session, principal, conv)
+
+
+async def append_system_part(
+    session: AsyncSession,
+    conv: Conversation,
+    *,
+    part_type: str,
+    body: str | None = None,
+    meta: dict[str, Any] | None = None,
+) -> None:
+    """Append a ``system``-authored part (W1). ``conv`` must be FOR UPDATE-held."""
+    await _append_part(
+        session,
+        conv,
+        author_kind="system",
+        author_id=None,
+        part_type=part_type,
+        body=body,
+        meta=meta,
+    )
+
+
+async def list_conversations_where(
+    session: AsyncSession,
+    where: sa.ColumnElement[bool],
+    *,
+    cursor: str | None = None,
+    limit: int | None = None,
+) -> Page[schemas.ConversationOut]:
+    """List conversations matching an arbitrary WHERE (a compiled custom-view filter, S3) with the
+    R1 keyset ordering (``waiting_since`` asc nulls-last, ``id`` asc). RLS-scoped."""
+    n = clamp_limit(limit)
+    stmt = select(Conversation).where(where)
+    stmt = stmt.order_by(Conversation.waiting_since.asc().nullslast(), Conversation.id.asc())
+    if cursor:
+        w, i = _decode_cursor(cursor)
+        if w is not None:
+            stmt = stmt.where(
+                sa.or_(
+                    Conversation.waiting_since > w,
+                    sa.and_(Conversation.waiting_since == w, Conversation.id > i),
+                    Conversation.waiting_since.is_(None),
+                )
+            )
+        else:
+            stmt = stmt.where(Conversation.waiting_since.is_(None), Conversation.id > i)
+    convs = list((await session.scalars(stmt.limit(n + 1))).all())
+    next_cursor = None
+    if len(convs) > n:
+        convs = convs[:n]
+        next_cursor = _encode_cursor(convs[-1])
+    return Page(items=[conversation_out(c) for c in convs], next_cursor=next_cursor)
+
+
+async def count_conversations_where(session: AsyncSession, where: sa.ColumnElement[bool]) -> int:
+    """Count conversations matching a compiled filter (S3 view counts). RLS-scoped."""
+    return (
+        await session.execute(select(sa.func.count()).select_from(Conversation).where(where))
+    ).scalar_one()

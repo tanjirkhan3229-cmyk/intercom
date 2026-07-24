@@ -17,3 +17,7 @@ CONVERSATION_CREATED = "conversation.created"
 CONVERSATION_PART_CREATED = "conversation.part.created"
 CONVERSATION_STATE_CHANGED = "conversation.state_changed"
 CONVERSATION_ASSIGNED = "conversation.assigned"
+# P1.7 SLA breach — fired by the breach sweep (per target) so downstream (webhooks/realtime/
+# notifications) can react. Rides the conversation aggregate for per-thread ordering. (Applying a
+# policy is recorded in ``sla_events`` for reporting, not on the aggregate stream.)
+CONVERSATION_SLA_BREACHED = "conversation.sla_breached"

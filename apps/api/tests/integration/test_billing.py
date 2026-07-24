@@ -223,9 +223,9 @@ async def test_webhook_is_idempotent_by_event_id(client: httpx.AsyncClient) -> N
 
     async with session_scope() as session:
         event_count = await session.scalar(
-            select(func.count()).select_from(StripeWebhookEvent).where(
-                StripeWebhookEvent.id == event_id
-            )
+            select(func.count())
+            .select_from(StripeWebhookEvent)
+            .where(StripeWebhookEvent.id == event_id)
         )
     assert event_count == 1
 
