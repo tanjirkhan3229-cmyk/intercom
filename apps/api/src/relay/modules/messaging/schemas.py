@@ -204,3 +204,22 @@ class WidgetReplyIn(BaseModel):
 class WidgetRatingIn(BaseModel):
     rating: int = Field(ge=1, le=5)
     remark: str | None = None
+
+
+# --- Mobile push (P1.10) ------------------------------------------------------
+
+
+class DeviceRegisterIn(BaseModel):
+    """A mobile SDK registering its APNs/FCM token for the authenticated contact."""
+
+    platform: str = Field(pattern="^(ios|android)$")
+    token: str = Field(min_length=1, max_length=4096)
+    # APNs bundle id / Android package name; optional (falls back to the server default topic).
+    app_id: str | None = Field(default=None, max_length=255)
+    environment: str = Field(default="production", pattern="^(production|sandbox)$")
+
+
+class DeviceOut(BaseModel):
+    id: str
+    platform: str
+    status: str

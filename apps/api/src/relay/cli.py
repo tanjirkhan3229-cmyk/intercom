@@ -94,6 +94,13 @@ def _automation_triggers() -> int:
     return 0
 
 
+def _push_dispatch() -> int:
+    from relay.modules.messaging.push_consumer import main as run_dispatch
+
+    run_dispatch()
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="relay")
     sub = parser.add_subparsers(dest="command", required=True)
@@ -122,6 +129,9 @@ def main(argv: list[str] | None = None) -> int:
     sub.add_parser(
         "automation-triggers", help="Run the workflow trigger consumer (outbox → workflow runs)"
     )
+    sub.add_parser(
+        "push-dispatch", help="Run the mobile push dispatcher (outbox → send.channels queue)"
+    )
 
     args = parser.parse_args(argv)
     if args.command == "openapi":
@@ -144,6 +154,8 @@ def main(argv: list[str] | None = None) -> int:
         return _ai_dispatch()
     if args.command == "automation-triggers":
         return _automation_triggers()
+    if args.command == "push-dispatch":
+        return _push_dispatch()
     parser.error(f"unknown command {args.command!r}")
     return 2
 

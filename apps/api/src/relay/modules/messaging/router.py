@@ -20,7 +20,7 @@ from relay.core.ids import IdPrefix, decode_public_id
 from relay.core.pagination import Page
 from relay.settings import get_settings
 
-from . import schemas, service
+from . import push_service, schemas, service
 
 router = APIRouter(tags=["messaging"])
 
@@ -438,3 +438,24 @@ async def widget_realtime_token(
     conversation_id: str, contact: ContactSession, session: SessionDep
 ) -> schemas.RealtimeTokenOut:
     return await service.contact_realtime_token(session, contact, conversation_id)
+
+
+# --- Mobile push device registration (P1.10, RFC-000 §2.1) --------------------
+
+
+@router.post("/widget/devices", response_model=schemas.DeviceOut)
+async def widget_register_device(
+    req: schemas.DeviceRegisterIn, contact: ContactSession, session: SessionDep
+) -> schemas.DeviceOut:
+    """Register (or rotate) the SDK's APNs/FCM push token for this contact. Naturally idempotent:
+    re-registering the same token upserts, so no ``Idempotency-Key`` bookkeeping is needed."""
+    return await push_service.register_device(session, contact, req)
+
+
+@router.delete("/widget/devices", status_code=204)
+async def widget_unregister_device(
+    contact: ContactSession, session: SessionDep, token: str = Query(min_length=1)
+) -> Response:
+    """Deregister a token on logout/uninstall (idempotent — a no-op if already gone)."""
+    await push_service.unregister_device(session, contact, token)
+    return Response(status_code=status.HTTP_204_NO_CONTENT)

@@ -345,6 +345,25 @@ services:
       redis-broker:
         condition: service_healthy
 
+  push-dispatch:
+    # Consumes `relay:outbox` and enqueues `messaging.send_push` on the `send.channels` queue for
+    # each agent/AI reply (P1.10). Never calls APNs/FCM itself — the send task does, on the worker
+    # fleet, so a slow push provider can't wedge the stream. Single-instance drainer (its own group).
+    build:
+      context: ..
+      dockerfile: apps/api/Dockerfile
+    environment: *api-env
+    command: ["relay", "push-dispatch"]
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+      postgres:
+        condition: service_healthy
+      redis-cache:
+        condition: service_healthy
+      redis-broker:
+        condition: service_healthy
+
 volumes:
   pgdata:
   brokerdata:

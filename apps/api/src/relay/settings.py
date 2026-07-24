@@ -81,6 +81,24 @@ class Settings(BaseSettings):
     # own unit test with a captured payload); staging/prod keep it on.
     sns_verify_signatures: bool = True
 
+    # --- Mobile push (P1.10, RFC-000 §2.1) ---
+    # Fan-out transport: ``memory`` captures sends via the FakePusher (dev/tests, no network);
+    # ``live`` calls the real APNs/FCM providers (creds below). Provider token-invalidation
+    # feedback (APNs 410 / FCM NotRegistered) marks the device row ``stale`` under either transport.
+    push_transport: Literal["live", "memory"] = "memory"
+    push_send_timeout_seconds: float = 10.0
+    push_breaker_threshold: int = 5
+    push_breaker_cooldown_seconds: float = 30.0
+    # APNs token-based auth (.p8 key). ``apns_configured`` gates the live APNs sender.
+    apns_team_id: str | None = None
+    apns_key_id: str | None = None
+    apns_private_key: str | None = None  # contents of the AuthKey_*.p8
+    apns_default_topic: str | None = None  # bundle id used when a token carries no app_id
+    apns_use_sandbox: bool = False  # debug builds register against the APNs sandbox host
+    # FCM HTTP v1 (service-account JSON). ``fcm_configured`` gates the live FCM sender.
+    fcm_project_id: str | None = None
+    fcm_credentials_json: str | None = None  # service-account JSON, as a string
+
     # --- Security (RFC-001 §10) ---
     jwt_signing_key: str = Field(default="dev-only-change-me-please-32-bytes-min", min_length=16)
     secret_encryption_key: str = Field(
@@ -294,6 +312,14 @@ class Settings(BaseSettings):
     @property
     def google_oidc_enabled(self) -> bool:
         return bool(self.google_oidc_client_id and self.google_oidc_client_secret)
+
+    @property
+    def apns_configured(self) -> bool:
+        return bool(self.apns_team_id and self.apns_key_id and self.apns_private_key)
+
+    @property
+    def fcm_configured(self) -> bool:
+        return bool(self.fcm_project_id and self.fcm_credentials_json)
 
 
 @lru_cache(maxsize=1)

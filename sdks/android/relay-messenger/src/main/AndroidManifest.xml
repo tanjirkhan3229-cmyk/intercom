@@ -1,0 +1,23 @@
+<?xml version="1.0" encoding="utf-8"?>
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+
+    <uses-permission android:name="android.permission.INTERNET" />
+    <!-- Android 13+ runtime notification permission; the host app must request it. -->
+    <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+
+    <application>
+        <!-- FCM entry point: token rotation (onNewToken) + inbound pushes. -->
+        <service
+            android:name="dev.relay.messenger.RelayMessagingService"
+            android:exported="false">
+            <intent-filter>
+                <action android:name="com.google.firebase.MESSAGING_EVENT" />
+            </intent-filter>
+        </service>
+
+        <!-- Direct-reply target for the RemoteInput notification action. -->
+        <receiver
+            android:name="dev.relay.messenger.ReplyReceiver"
+            android:exported="false" />
+    </application>
+</manifest>
