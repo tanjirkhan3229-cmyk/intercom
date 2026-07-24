@@ -1,6 +1,17 @@
 import { RelayClient, RelayApiError } from "@relay/sdk-ts";
 import type { Page } from "@relay/shared";
 import type {
+  AttributeDefinition,
+  Workflow,
+  WorkflowCreateInput,
+  WorkflowGraph,
+  WorkflowPatchInput,
+  WorkflowRun,
+  WorkflowRunStep,
+  WorkflowSummary,
+  WorkflowVersion,
+} from "./workflows/contract";
+import type {
   Article,
   ArticleInput,
   ArticleSummary,
@@ -253,6 +264,99 @@ export class RelayApi {
     return this.client.request<HelpCenterConfig>("/v0/help-center", {
       method: "PATCH",
       body: input,
+    });
+  }
+
+  // --- Workflows (automation, P1.6 builder ↔ P1.5 engine) ---------------------
+  // Contract: src/lib/workflows/contract.md. This façade is the single seam that isolates the
+  // REST envelope — if the P1.5 backend lands with minor differences, only this section changes.
+  listWorkflows(params: { cursor?: string; limit?: number; status?: string } = {}): Promise<
+    Page<WorkflowSummary>
+  > {
+    return this.client.request<Page<WorkflowSummary>>("/v0/workflows", {
+      query: { cursor: params.cursor, limit: params.limit, status: params.status },
+    });
+  }
+  createWorkflow(input: WorkflowCreateInput): Promise<Workflow> {
+    return this.client.request<Workflow>("/v0/workflows", {
+      method: "POST",
+      headers: { "Idempotency-Key": idemKey() },
+      body: input,
+    });
+  }
+  getWorkflow(id: string): Promise<Workflow> {
+    return this.client.request<Workflow>(`/v0/workflows/${id}`);
+  }
+  patchWorkflow(id: string, input: WorkflowPatchInput): Promise<Workflow> {
+    return this.client.request<Workflow>(`/v0/workflows/${id}`, {
+      method: "PATCH",
+      headers: { "Idempotency-Key": idemKey() },
+      body: input,
+    });
+  }
+  deleteWorkflow(id: string): Promise<void> {
+    return this.client.request<void>(`/v0/workflows/${id}`, {
+      method: "DELETE",
+      headers: { "Idempotency-Key": idemKey() },
+    });
+  }
+  /** Idempotent full-graph replace of the draft version (server does not validate a draft). */
+  saveDraft(id: string, graph: WorkflowGraph): Promise<WorkflowVersion> {
+    return this.client.request<WorkflowVersion>(`/v0/workflows/${id}/draft`, {
+      method: "PUT",
+      headers: { "Idempotency-Key": idemKey() },
+      body: { graph },
+    });
+  }
+  /** Validate + freeze a new immutable published version. Throws RelayApiError(422) on an invalid
+   * graph; the UI surfaces `err.message` (RelayApiError does not expose `details.path`, so the rich
+   * per-node mapping comes from the client-side validator, which blocks publish pre-flight). */
+  publishWorkflow(id: string, graph: WorkflowGraph): Promise<WorkflowVersion> {
+    return this.client.request<WorkflowVersion>(`/v0/workflows/${id}/publish`, {
+      method: "POST",
+      headers: { "Idempotency-Key": idemKey() },
+      body: { graph },
+    });
+  }
+  listWorkflowVersions(id: string, cursor?: string): Promise<Page<WorkflowVersion>> {
+    return this.client.request<Page<WorkflowVersion>>(`/v0/workflows/${id}/versions`, {
+      query: { cursor },
+    });
+  }
+  getWorkflowVersion(id: string, versionId: string): Promise<WorkflowVersion> {
+    return this.client.request<WorkflowVersion>(`/v0/workflows/${id}/versions/${versionId}`);
+  }
+  listWorkflowRuns(
+    id: string,
+    params: { status?: string; versionId?: string; cursor?: string; limit?: number } = {},
+  ): Promise<Page<WorkflowRun>> {
+    return this.client.request<Page<WorkflowRun>>(`/v0/workflows/${id}/runs`, {
+      query: {
+        status: params.status,
+        version_id: params.versionId,
+        cursor: params.cursor,
+        limit: params.limit,
+      },
+    });
+  }
+  getWorkflowRun(runId: string): Promise<WorkflowRun> {
+    return this.client.request<WorkflowRun>(`/v0/workflows/runs/${runId}`);
+  }
+  listWorkflowRunSteps(runId: string): Promise<WorkflowRunStep[]> {
+    return this.client.request<WorkflowRunStep[]>(`/v0/workflows/runs/${runId}/steps`);
+  }
+  rerunFromStep(runId: string, fromNodeId: string): Promise<WorkflowRun> {
+    return this.client.request<WorkflowRun>(`/v0/workflows/runs/${runId}/rerun`, {
+      method: "POST",
+      headers: { "Idempotency-Key": idemKey() },
+      body: { from_node_id: fromNodeId },
+    });
+  }
+
+  // --- Attribute definitions (crm, reused by the predicate field picker) ------
+  listAttributeDefinitions(entity: "contact" | "company"): Promise<AttributeDefinition[]> {
+    return this.client.request<AttributeDefinition[]>("/v0/attribute-definitions", {
+      query: { entity },
     });
   }
 }
