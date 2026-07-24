@@ -53,7 +53,9 @@ class FakeSender:
             self.fail_next -= 1
             raise SendError("forced test failure")
         self.sent.append(SentEmail(sender=sender, recipients=list(recipients), raw=raw))
-        return f"fake-{len(self.sent)}"
+        # Globally unique id (like a real SES MessageId) so provider-id lookups never collide
+        # across workspaces — the outbound engagement resolver relies on that uniqueness.
+        return f"fake-{uuid.uuid4().hex}"
 
     def reset(self) -> None:
         self.sent.clear()

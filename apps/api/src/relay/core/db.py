@@ -98,6 +98,21 @@ async def session_scope(workspace_id: uuid.UUID | None = None) -> AsyncIterator[
         yield session
 
 
+@asynccontextmanager
+async def ro_session_scope(workspace_id: uuid.UUID | None = None) -> AsyncIterator[AsyncSession]:
+    """Open a read-only (``app_ro`` / replica) transactional session, optionally RLS-scoped.
+
+    For replica-tolerant bulk reads (R5) such as the outbound audience snapshot. Binds a fresh
+    sessionmaker to the cached RO engine so it always tracks the current engine (tests rebind it),
+    without adding a module-global that the test fixtures would have to reset.
+    """
+    maker = async_sessionmaker(bind=get_ro_engine(), expire_on_commit=False, autoflush=False)
+    async with maker() as session, session.begin():
+        if workspace_id is not None:
+            await set_workspace_guc(session, workspace_id)
+        yield session
+
+
 async def db_healthcheck() -> bool:
     from sqlalchemy import text
 

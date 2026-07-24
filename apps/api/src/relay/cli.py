@@ -84,6 +84,20 @@ def _automation_triggers() -> int:
     return 0
 
 
+def _outbound_fire() -> int:
+    from relay.modules.outbound.consumer import main as run_fire
+
+    run_fire()
+    return 0
+
+
+def _outbound_stats() -> int:
+    from relay.modules.outbound.stats_consumer import main as run_stats
+
+    run_stats()
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="relay")
     sub = parser.add_subparsers(dest="command", required=True)
@@ -106,6 +120,12 @@ def main(argv: list[str] | None = None) -> int:
     sub.add_parser(
         "automation-triggers", help="Run the workflow trigger consumer (outbox → workflow runs)"
     )
+    sub.add_parser(
+        "outbound-fire", help="Run the campaign-fire dispatch consumer (outbox → fire tasks)"
+    )
+    sub.add_parser(
+        "outbound-stats", help="Run the outbound stats consumer (outbox → campaign_stats)"
+    )
 
     args = parser.parse_args(argv)
     if args.command == "openapi":
@@ -126,6 +146,10 @@ def main(argv: list[str] | None = None) -> int:
         return _webhook_dispatch()
     if args.command == "automation-triggers":
         return _automation_triggers()
+    if args.command == "outbound-fire":
+        return _outbound_fire()
+    if args.command == "outbound-stats":
+        return _outbound_stats()
     parser.error(f"unknown command {args.command!r}")
     return 2
 

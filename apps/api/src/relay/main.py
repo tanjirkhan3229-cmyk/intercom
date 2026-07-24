@@ -28,6 +28,7 @@ from relay.modules.identity.middleware import TenancyMiddleware
 from relay.modules.identity.router import router as identity_router
 from relay.modules.knowledge.router import router as knowledge_router
 from relay.modules.messaging.router import router as messaging_router
+from relay.modules.outbound.router import router as outbound_router
 from relay.modules.platform.router import router as platform_router
 from relay.modules.reporting.router import router as reporting_router
 from relay.modules.webhooks.router import router as webhooks_router
@@ -95,6 +96,7 @@ def create_app() -> FastAPI:
     app.include_router(reporting_router, prefix="/v0")
     app.include_router(webhooks_router, prefix="/v0")
     app.include_router(automation_router, prefix="/v0")
+    app.include_router(outbound_router, prefix="/v0")
 
     # Sentry + OTel tracing + FastAPI instrumentation (all no-ops unless configured — RFC-001 §9).
     init_app_observability(app)

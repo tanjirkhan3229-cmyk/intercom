@@ -64,6 +64,11 @@ def inbox_channel(workspace_public_id: str, team: str) -> str:
     return f"inbox:{workspace_public_id}:{team}"
 
 
+def contact_channel(contact_public_id: str) -> str:
+    """Per-contact widget channel (P1.8 in-app posts push to the contact's own feed)."""
+    return f"contact:{contact_public_id}"
+
+
 # --- Token minting ------------------------------------------------------------
 
 
@@ -127,14 +132,16 @@ def widget_connection_token(
     other channel for the connection, and the API mints no subscription tokens for widgets.
     """
     conv_pub = encode_public_id(IdPrefix.CONVERSATION, conversation_id)
+    contact_pub = encode_public_id(IdPrefix.CONTACT, contact_id)
     return mint_connection_token(
-        f"contact:{encode_public_id(IdPrefix.CONTACT, contact_id)}",
+        f"contact:{contact_pub}",
         info={
             "kind": "contact",
             "ws": encode_public_id(IdPrefix.WORKSPACE, workspace_id),
             "conversation": conv_pub,
         },
-        channels=[conv_channel(conv_pub)],
+        # Pinned allow-list: the contact's own conversation thread + its personal post feed (P1.8).
+        channels=[conv_channel(conv_pub), contact_channel(contact_pub)],
     )
 
 

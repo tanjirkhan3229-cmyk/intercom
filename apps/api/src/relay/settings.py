@@ -81,6 +81,22 @@ class Settings(BaseSettings):
     # own unit test with a captured payload); staging/prod keep it on.
     sns_verify_signatures: bool = True
 
+    # --- Outbound (P1.8: broadcasts, posts/chats, subscriptions/consent) ---
+    # Public base URL of this API, used to build one-click List-Unsubscribe / unsubscribe links.
+    public_api_base_url: str = "http://localhost:8000"
+    # Dedicated HMAC key for stateless unsubscribe tokens (separate audience from reply/JWT keys).
+    unsubscribe_token_secret: str = Field(
+        default="dev-unsubscribe-token-secret-change-me", min_length=16
+    )
+    # Campaign send-rate token buckets (per second, RFC-001 §6.7). None = uncapped (dev/tests).
+    outbound_global_send_rate_per_sec: int | None = None
+    outbound_workspace_send_rate_per_sec: int | None = None
+    # Frequency capping v0: max marketing messages per contact per rolling window. None = no cap.
+    outbound_freq_cap_daily: int | None = None
+    outbound_freq_cap_weekly: int | None = None
+    # Contacts enqueued per send-chunk task (RFC-001 §6.7 "chunked enqueue 1k/task").
+    outbound_chunk_size: int = 1000
+
     # --- Security (RFC-001 §10) ---
     jwt_signing_key: str = Field(default="dev-only-change-me-please-32-bytes-min", min_length=16)
     secret_encryption_key: str = Field(

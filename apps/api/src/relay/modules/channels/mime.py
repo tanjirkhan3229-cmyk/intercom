@@ -207,6 +207,40 @@ def build_outbound(
     return msg
 
 
+def build_broadcast(
+    *,
+    sender: str,
+    sender_name: str,
+    to_addr: str,
+    subject: str,
+    html_body: str,
+    text_body: str,
+    message_id: str,
+    reply_to: str | None = None,
+    list_unsubscribe_url: str | None = None,
+) -> EmailMessage:
+    """Render an outbound broadcast email: text + HTML multipart, optional RFC 8058 one-click
+    List-Unsubscribe headers. Used by the outbound module via ``channels.send_broadcast_email``.
+    """
+    # max_line_length=998 (RFC 5322 hard limit): keeps a long List-Unsubscribe URL on one literal
+    # line instead of RFC 2047 encoded-word folding it (which mail clients can't parse).
+    msg = EmailMessage(policy=email.policy.default.clone(max_line_length=998))
+    msg["From"] = email.utils.formataddr((sender_name, sender))
+    msg["To"] = to_addr
+    msg["Subject"] = subject
+    msg["Message-ID"] = message_id
+    msg["Date"] = email.utils.formatdate(localtime=False)
+    if reply_to:
+        msg["Reply-To"] = reply_to
+    if list_unsubscribe_url:
+        # RFC 8058 one-click: both headers are required together.
+        msg["List-Unsubscribe"] = f"<{list_unsubscribe_url}>"
+        msg["List-Unsubscribe-Post"] = "List-Unsubscribe=One-Click"
+    msg.set_content(text_body or html_to_text(html_body))
+    msg.add_alternative(html_body or "<html><body></body></html>", subtype="html")
+    return msg
+
+
 def _escape(text: str) -> str:
     return text.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
 

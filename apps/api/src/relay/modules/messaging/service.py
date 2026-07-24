@@ -306,6 +306,53 @@ async def _open_conversation(
     return conv
 
 
+async def create_outbound_conversation(
+    session: AsyncSession,
+    *,
+    workspace_id: uuid.UUID,
+    contact_id: uuid.UUID,
+    body: str,
+    author_kind: str = "system",
+    author_id: uuid.UUID | None = None,
+) -> uuid.UUID:
+    """Open a proactive outbound chat (P1.8 in-app chats): a business-authored first message on a
+    ``chat`` conversation the contact can reply to. Emits ``conversation.created`` +
+    ``conversation.part.created`` so realtime fan-out and reporting behave exactly as for any
+    conversation. Returns the conversation id. Caller has set the RLS GUC."""
+    now = _now()
+    conv = Conversation(
+        id=uuid7(),
+        workspace_id=workspace_id,
+        contact_id=contact_id,
+        channel="chat",
+        team_id=None,
+        state="open",
+        last_part_at=now,
+    )
+    session.add(conv)
+    try:
+        await session.flush()
+    except sa.exc.IntegrityError as exc:
+        raise ValidationError("unknown contact") from exc
+
+    await outbox.emit(
+        session,
+        aggregate=events.AGGREGATE_CONVERSATION,
+        aggregate_id=conv.id,
+        topic=events.CONVERSATION_CREATED,
+        payload=_conversation_payload(conv),
+    )
+    await _append_part(
+        session,
+        conv,
+        author_kind=author_kind,
+        author_id=author_id,
+        part_type="comment",
+        body=body,
+    )
+    return conv.id
+
+
 async def create_conversation(
     session: AsyncSession, principal: Principal, req: schemas.ConversationCreate
 ) -> schemas.ConversationOut:
@@ -1129,6 +1176,11 @@ async def widget_boot(
 
     contact_uuid = decode_public_id(IdPrefix.CONTACT, contact.id)
     token = create_widget_session_token(contact_id=contact_uuid, workspace_id=workspace_id)
+    # In-app post catch-up (P1.8): delivered-but-unseen posts for this contact. Lazy import keeps
+    # the messaging<->outbound module load acyclic (linter allows messaging -> outbound.service).
+    from relay.modules.outbound import service as outbound_service
+
+    posts = await outbound_service.pending_posts_for_contact(session, contact_uuid)
     return schemas.WidgetBootResponse(
         session_token=token,
         contact=schemas.WidgetContactOut(
@@ -1136,6 +1188,7 @@ async def widget_boot(
         ),
         config=config,
         conversations=await _contact_conversations(session, contact_uuid),
+        posts=posts,
     )
 
 

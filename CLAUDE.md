@@ -16,6 +16,26 @@ the RFC in the same change — docs and code never drift.
 
 ---
 
+## Where we are (build status)
+
+Phase 0 is complete (through P0.12). Phase 1 in progress: **P1.5 workflow engine**, **P1.7 inbox
+v2** (SLAs, custom views, balanced assignment, collision detection) and **P1.8 outbound**
+(this change) are landed. This branch (`feat/p1.8-outbound`) is **stacked on `feat/p1.7-inbox-v2`**.
+
+**P1.8 — Outbound (backend):** email broadcasts (`campaigns` / `campaign_versions` / `sends`),
+in-app posts/chats, subscription types + consent + RFC 8058 one-click unsubscribe, audience
+predicate→SQL (`crm.audience` / `crm.service.snapshot_audience`), server-side MJML render, Lua
+send-rate + frequency capping, and the `message_events` → `campaign_stats` rollup + reconcile.
+Consumers: `relay outbound-fire` / `relay outbound-stats`. Frontend (editors/report UI/widget
+rendering) is deferred; event-count audience targeting is deferred to P1.9.
+
+Alembic head: `0011_outbound` (chain `… → 0009_automation` (P1.5) → `0010_inbox_v2` (P1.7) →
+`0011_outbound` (P1.8)). **P1.8 deviation (RFC-002 §5.6):** `sends` is non-partitioned so its
+`UNIQUE(workspace_id, campaign_id, contact_id)` claim slot is a hard cross-partition guarantee;
+`message_events` is the partitioned firehose.
+
+---
+
 ## Master rules (non-negotiable — every change assumes them)
 
 1. **Tenancy is sacred.** Every tenant table carries `workspace_id`; every request runs its

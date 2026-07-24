@@ -114,10 +114,16 @@ def _database() -> Iterator[None]:
 async def _fresh_engines(_database: None) -> AsyncIterator[None]:
     """Rebind the app's async engines + Redis clients to the current test, then dispose.
 
-    Also flushes the Redis cache DB so event buffers never leak between tests.
+    Also flushes the Redis cache DB and clears the global (non-RLS) ``outbox`` table so event
+    buffers / undrained events never leak between tests — the outbox is shared infra
+    (no ``workspace_id``), so a prior test's undrained rows would otherwise pollute a later one
+    (e.g. the relay's global ``_fetch_pending``, or per-aggregate seq allocation).
     """
+    import psycopg
+
     import relay.core.db as db
     import relay.core.redis as rds
+    from relay.settings import get_settings
 
     db._engine = None
     db._engine_ro = None
@@ -127,6 +133,8 @@ async def _fresh_engines(_database: None) -> AsyncIterator[None]:
         rds._sync_client.close()
         rds._sync_client = None
     rds.get_redis_sync().flushdb()
+    with psycopg.connect(get_settings().database_url_psycopg, autocommit=True) as _conn:
+        _conn.execute("DELETE FROM outbox")
 
     yield
 

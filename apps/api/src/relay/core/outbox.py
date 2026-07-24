@@ -69,12 +69,19 @@ async def emit(
 ) -> None:
     """Append an outbox row **in the caller's transaction** (master rule 2).
 
-    ``seq`` is the next value for this ``aggregate_id`` (``MAX(seq)+1``). That is race-free as
-    long as the caller holds a row lock on the aggregate for the txn's duration — W1 does,
-    because it UPDATEs the conversation head *before* emitting, so concurrent writes to the same
-    conversation serialise on that row lock and each sees the prior seq. The
-    ``UNIQUE(aggregate_id, seq)`` constraint is the backstop if that assumption is ever broken.
+    ``seq`` is the next value for this ``aggregate_id`` (``MAX(seq)+1``). Concurrent emitters for
+    the same aggregate are serialised by a per-aggregate **transaction-scoped advisory lock** taken
+    here, so seq allocation is race-free without requiring every caller to hold a domain row lock —
+    essential for high-fan-in aggregates like a campaign fanned out across parallel send workers
+    (P1.8), where locking the campaign row per send would serialise the whole send path. The lock
+    is released on commit/rollback; ``UNIQUE(aggregate_id, seq)`` remains the backstop.
     """
+    # hashtextextended maps the aggregate id to the bigint advisory-lock key. Held until this txn
+    # ends, so a concurrent emit for the same aggregate waits, then reads the committed MAX(seq).
+    await session.execute(
+        sa.text("SELECT pg_advisory_xact_lock(hashtextextended(:agg, 0))"),
+        {"agg": str(aggregate_id)},
+    )
     next_seq = (
         select(func.coalesce(func.max(OutboxMessage.seq), 0) + 1)
         .where(OutboxMessage.aggregate_id == aggregate_id)
