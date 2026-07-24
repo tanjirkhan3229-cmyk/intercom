@@ -115,6 +115,30 @@ class AgentRunOut(BaseModel):
     created_at: dt.datetime
 
 
+class AgentRunSummary(BaseModel):
+    """A run inspector list row (P1.4): enough to scan/triage without the full trace payload.
+    ``latency_total_ms`` is the end-to-end turn latency (``latency_ms['total']``)."""
+
+    id: str
+    conversation_id: str
+    created_at: dt.datetime
+    status: str
+    outcome: str | None
+    handoff_reason: str | None
+    grounding_score: float | None
+    cost_usd: float
+    latency_total_ms: float | None
+    query: str
+
+
+class AgentRunDetailOut(AgentRunOut):
+    """A single run with its full replayable ``trace`` (RFC-003 §3) — the retrieved evidence
+    *content* (titles, heading paths, chunk text), not just ids+scores. This is what lets a support
+    engineer answer "why did Neko say X" without engineering help (P1.4 usability acceptance)."""
+
+    trace: dict[str, Any]
+
+
 class ReplayResult(BaseModel):
     """The outcome of re-running a stored turn from its ledger ``trace`` (RFC-003 §8)."""
 

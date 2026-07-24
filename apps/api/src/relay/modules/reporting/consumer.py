@@ -65,6 +65,7 @@ _METRIC_FIELDS = (
     "replies_count",
     "rating",
     "rated_at",
+    "ai_involved",
     "last_seq",
 )
 

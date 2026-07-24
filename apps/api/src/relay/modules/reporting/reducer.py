@@ -46,6 +46,7 @@ class Metrics:
     replies_count: int = 0
     rating: int | None = None
     rated_at: dt.datetime | None = None
+    ai_involved: bool = False
     last_seq: int = 0
 
 
@@ -101,6 +102,11 @@ def apply_event(metrics: Metrics, topic: str, payload: dict[str, object], seq: i
         part_type = _str(payload.get("part_type"))
         author_kind = _str(payload.get("author_kind"))
         created_at = _parse_dt(_str(payload.get("created_at")))
+        # Neko-touched (RFC-002 §5.6 ``ai_involved``): true once Neko authors ANY part — an answer
+        # comment or a handoff summary note — so the CSAT-delta split counts every Neko-touched
+        # conversation, not only those it fully answered.
+        if author_kind == "ai_agent":
+            m.ai_involved = True
         if part_type == "comment" and author_kind in _AGENT_KINDS:
             m.replies_count += 1
             if m.first_admin_reply_at is None:
