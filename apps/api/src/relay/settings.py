@@ -236,6 +236,29 @@ class Settings(BaseSettings):
     # private/loopback/link-local/metadata IPs. Tests/dev set True to allow a localhost receiver.
     webhook_allow_private_targets: bool = False
 
+    # --- Workflows / automation (P1.5, RFC-001 §6.7) ---
+    # Master kill switch: when off, the trigger consumer + executor tasks no-op (risky work behind a
+    # flag — DoD). ``workflow_sla_action_enabled`` gates the apply_sla action, which lands in P1.7.
+    workflows_enabled: bool = True
+    workflow_sla_action_enabled: bool = False
+    # Runaway backstop: max nodes advanced in one run. Termination is actually guaranteed by the
+    # acyclic-graph validation (each node runs ≤ once), so this only needs to sit safely ABOVE the
+    # graph node cap (graph._MAX_NODES = 200) — never trip a valid max-size linear graph.
+    workflow_run_step_budget: int = 1000
+    # Durable-timer claim lease + reaper staleness window (seconds). The reaper re-drives running/
+    # suspended runs idle longer than this — the broker-flush recovery path.
+    workflow_timer_lease_seconds: int = 120
+    workflow_run_stale_seconds: int = 120
+    # call_webhook action: bound + retry the external POST (SSRF-guarded like webhook delivery).
+    # ``workflow_action_max_retries`` bounds real HTTP attempts (retries are driven by the reaper);
+    # ``workflow_action_lease_seconds`` is the per-attempt lease that blocks a concurrent/duplicate
+    # POST for the same node — it MUST exceed the action timeout and be < the reaper stale window.
+    workflow_action_timeout_seconds: float = 10.0
+    workflow_action_max_retries: int = 5
+    workflow_action_lease_seconds: int = 30
+    workflow_breaker_threshold: int = 5
+    workflow_breaker_cooldown_seconds: int = 60
+
     # --- Observability (P0.12, RFC-001 §9/§13) ---
     # Prometheus: the `app` serves /metrics; the non-HTTP shapes (worker/beat/relay/fanout) start a
     # scrape server on ``metrics_port``. In prod set ``PROMETHEUS_MULTIPROC_DIR`` so the

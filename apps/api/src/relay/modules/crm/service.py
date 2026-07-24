@@ -728,3 +728,33 @@ async def track_events(
     pipe.sadd(EVENTS_BUFFER_WORKSPACES, str(workspace_id))
     await pipe.execute()
     return len(payloads)
+
+
+# --- Automation system entry point (P1.5, RFC-001 §6.7) -------------------------------------------
+
+
+async def system_set_contact_attribute(
+    session: AsyncSession, *, contact_id: uuid.UUID, key: str, value: Any
+) -> None:
+    """Set one contact custom attribute (workflow ``set_attribute`` target=contact).
+
+    The sanctioned cross-module entry point for **system-initiated** work (no ``Principal``/RBAC —
+    the workflow executor is trusted infrastructure; import-linter allows ``automation ->
+    crm.service``). Reuses the same typed :func:`validate_custom` swamp guard as ``identify`` (an
+    undefined key or a type mismatch raises 422, which the executor records as a skipped step) and
+    emits ``crm.contact.updated`` in the caller's txn — marked ``origin=workflow`` so a
+    ``contact.updated``-triggered workflow that writes a contact attribute cannot cascade into
+    itself (loop protection). The caller has set the RLS GUC, so an unknown/other-tenant/deleted
+    contact raises ``NotFoundError``.
+    """
+    contact = await _get_contact(session, contact_id)
+    await validate_custom(session, "contact", {key: value})
+    contact.custom = {**contact.custom, key: value}
+    await session.flush()
+    await outbox.emit(
+        session,
+        aggregate=events.AGGREGATE_CONTACT,
+        aggregate_id=contact.id,
+        topic=events.CONTACT_UPDATED,
+        payload={**_contact_payload(contact), "origin": "workflow"},
+    )

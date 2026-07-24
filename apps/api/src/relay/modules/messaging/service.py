@@ -1537,3 +1537,182 @@ async def queue_snapshot(session: AsyncSession) -> dict[str, int | None]:
         int((_now() - oldest_waiting).total_seconds()) if oldest_waiting is not None else None
     )
     return {"open": open_count, "unassigned": unassigned, "longest_wait_s": longest_wait_s}
+
+
+# --- Automation system entry points (P1.5, RFC-001 §6.7) ------------------------------------------
+#
+# System-initiated conversation effects for the workflow executor. Like the channel adapters above,
+# they are the sanctioned cross-module entry points (import-linter allows ``automation ->
+# messaging.service``): no acting admin / ``Principal`` (a workflow is trusted infrastructure, not a
+# user), so there is no RBAC check. They reuse the W1 core (``_append_part`` → head update + outbox)
+# so ``waiting_since`` / state-machine / outbox rules never drift. The caller (the automation task)
+# has already opened the txn and set the RLS GUC; the conversation is loaded under RLS, so a subject
+# in another workspace (or deleted) raises ``NotFoundError`` — which the executor records as a
+# skipped step rather than letting it crash the run. Idempotency/exactly-once is the executor's
+# ledger (``workflow_run_steps``), not these functions.
+
+
+async def _record_system_assignment(session: AsyncSession, conv: Conversation) -> None:
+    await _append_part(
+        session,
+        conv,
+        author_kind="system",
+        author_id=None,
+        part_type="assignment",
+        meta={
+            "assignee_id": encode_public_id(IdPrefix.ADMIN, conv.assignee_id)
+            if conv.assignee_id
+            else None,
+            "team_id": encode_public_id(IdPrefix.TEAM, conv.team_id) if conv.team_id else None,
+            "by": "workflow",
+        },
+    )
+    await outbox.emit(
+        session,
+        aggregate=events.AGGREGATE_CONVERSATION,
+        aggregate_id=conv.id,
+        topic=events.CONVERSATION_ASSIGNED,
+        # ``origin=workflow`` tells the automation trigger consumer this event was produced by a
+        # workflow action, so it won't re-trigger workflows (loop protection).
+        payload={**_conversation_payload(conv), "origin": "workflow"},
+    )
+
+
+async def system_assign(
+    session: AsyncSession,
+    *,
+    conversation_id: uuid.UUID,
+    assignee_id: uuid.UUID | None = None,
+    team_id: uuid.UUID | None = None,
+) -> None:
+    """Assign a conversation to an admin and/or team (workflow ``assign`` action)."""
+    conv = await _load_for_update(session, conversation_id)
+    if assignee_id is not None:
+        conv.assignee_id = assignee_id
+    if team_id is not None:
+        conv.team_id = team_id
+    await _record_system_assignment(session, conv)
+
+
+async def system_route_to_team(
+    session: AsyncSession, *, conversation_id: uuid.UUID, team_id: uuid.UUID
+) -> None:
+    """Route a conversation to a team (workflow ``route_to_team`` action): set the team and
+    clear the assignee so it lands in that team's unassigned queue."""
+    conv = await _load_for_update(session, conversation_id)
+    conv.team_id = team_id
+    conv.assignee_id = None
+    await _record_system_assignment(session, conv)
+
+
+async def system_add_tag(session: AsyncSession, *, conversation_id: uuid.UUID, name: str) -> None:
+    """Add a tag to a conversation (workflow ``add_tag`` action). Idempotent per (conv, name)."""
+    conv = await _get(session, conversation_id)  # 404 (RLS) if not this workspace's
+    stmt = (
+        pg_insert(ConversationTag)
+        .values(workspace_id=conv.workspace_id, conversation_id=conv.id, name=name)
+        .on_conflict_do_nothing(
+            index_elements=[
+                ConversationTag.workspace_id,
+                ConversationTag.conversation_id,
+                ConversationTag.name,
+            ]
+        )
+    )
+    await session.execute(stmt)
+    await session.flush()
+
+
+async def system_set_conversation_attribute(
+    session: AsyncSession, *, conversation_id: uuid.UUID, key: str, value: Any
+) -> None:
+    """Set one conversation-level custom attribute (workflow ``set_attribute`` target=conversation).
+    Metadata only — no outbox event (no consumer meters conversation attributes)."""
+    conv = await _load_for_update(session, conversation_id)
+    conv.attributes = {**conv.attributes, key: value}
+    await session.flush()
+
+
+async def system_change_state(
+    session: AsyncSession,
+    *,
+    conversation_id: uuid.UUID,
+    target: str,
+    snoozed_until: dt.datetime | None = None,
+) -> None:
+    """Snooze/close/(re)open a conversation (workflow ``snooze``/``close`` actions).
+
+    A no-op if already in ``target``. An invalid transition raises ``ConflictError`` (the executor
+    records a skipped step). Mirrors :func:`change_state` minus the acting admin.
+    """
+    conv = await _load_for_update(session, conversation_id)
+    if conv.state == target:
+        return
+    if target not in VALID_TRANSITIONS.get(conv.state, frozenset()):
+        raise ConflictError(
+            f"cannot move conversation from '{conv.state}' to '{target}'",
+            details={"from": conv.state, "to": target},
+        )
+    prev = conv.state
+    if target == "snoozed":
+        if snoozed_until is None:
+            raise ValidationError("snoozing requires snoozed_until")
+        conv.snoozed_until = snoozed_until
+        conv.waiting_since = None
+    elif target == "closed":
+        conv.snoozed_until = None
+        conv.waiting_since = None
+    else:  # open
+        conv.snoozed_until = None
+    conv.state = target
+    await _append_part(
+        session,
+        conv,
+        author_kind="system",
+        author_id=None,
+        part_type="state_change",
+        meta={"from": prev, "to": target, "by": "workflow"},
+    )
+    await outbox.emit(
+        session,
+        aggregate=events.AGGREGATE_CONVERSATION,
+        aggregate_id=conv.id,
+        topic=events.CONVERSATION_STATE_CHANGED,
+        # ``origin=workflow`` prevents a state_changed-triggered workflow that itself closes/snoozes
+        # from re-triggering itself (loop protection).
+        payload={**_conversation_payload(conv), "from": prev, "to": target, "origin": "workflow"},
+    )
+
+
+async def system_post_message(
+    session: AsyncSession,
+    *,
+    conversation_id: uuid.UUID,
+    body: str,
+    meta: dict[str, Any] | None = None,
+) -> uuid.UUID:
+    """Post a bot-authored message to a conversation (workflow ``send_reply`` + bot-step prompts).
+
+    Authored as ``ai_agent`` so it renders like an automated reply and clears ``waiting_since``.
+    ``meta`` carries the bot-step spec (buttons/collect) the widget/inbox renders natively."""
+    conv = await _load_for_update(session, conversation_id)
+    part = await _append_part(
+        session,
+        conv,
+        author_kind="ai_agent",
+        author_id=None,
+        part_type="comment",
+        body=body,
+        meta=meta or {},
+    )
+    return part.id
+
+
+async def system_set_ai_status(
+    session: AsyncSession, *, conversation_id: uuid.UUID, status: str
+) -> None:
+    """Set the conversation's ``ai_status`` (workflow ``hand_to_aide`` action). The ``ai`` module is
+    a stub in P1.5, so this flips the flag the Aide pipeline (P1.2) will consume."""
+    conv = await _load_for_update(session, conversation_id)
+    conv.ai_status = status
+    await session.flush()
